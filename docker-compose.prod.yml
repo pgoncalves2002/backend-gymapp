@@ -18,7 +18,9 @@ services:
     # Não expõe a 8000 pro host — quem fala com o web é o nginx pela rede interna.
     ports: !reset []
     restart: always
-    env_file:
+    # !override SUBSTITUI a lista do compose.yml de dev (que aponta pra .env).
+    # Sem isso, o Compose tentaria ler .env + .env.prod e quebraria na VPS.
+    env_file: !override
       - .env.prod
 
   nginx:
