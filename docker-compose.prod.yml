@@ -42,9 +42,11 @@ services:
       - media_files:/srv/media:ro
       - certbot_www:/var/www/certbot:ro
       - certbot_certs:/etc/letsencrypt:ro
-    # Recarrega nginx a cada 6h pra captar renovações de cert sem precisar restart.
-    command: >
-      /bin/sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"
+    # SEM command custom: deixa o entrypoint padrão da imagem nginx rodar e
+    # processar os templates de /etc/nginx/templates → /etc/nginx/conf.d.
+    # Pra recarregar cert renovado, o cronjob no certbot dispara reload via
+    # post-hook (ou rodamos `docker exec gym_nginx nginx -s reload` manualmente
+    # após renewal — é necessário só a cada ~60 dias).
 
   certbot:
     image: certbot/certbot:latest
