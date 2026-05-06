@@ -34,10 +34,25 @@ git push -u origin main
 
 ## 2) Bootstrap da VPS (1ª vez, como root)
 
-SSH na VPS e rode:
+> **VPS HostGator usa porta SSH 22022** (não a 22 padrão). Se for outro provedor, descubra com `grep ^Port /etc/ssh/sshd_config` na VPS. O bootstrap detecta isso automaticamente.
+
+Pra simplificar SSH, adicione um alias em `~/.ssh/config` no seu Mac:
 
 ```bash
-ssh root@<ip-da-vps>
+cat >> ~/.ssh/config << 'EOF'
+
+Host gym-vps
+    HostName <ip-da-vps>
+    Port 22022
+    User root
+EOF
+chmod 600 ~/.ssh/config
+```
+
+Aí logue e rode:
+
+```bash
+ssh gym-vps
 
 # Opção A — script via curl direto do GitHub
 curl -fsSL https://raw.githubusercontent.com/<seu-user>/<seu-repo>/main/deploy/scripts/bootstrap-vps.sh | bash
@@ -50,13 +65,19 @@ bash /opt/backend-gymapp/deploy/scripts/bootstrap-vps.sh
 
 O que esse script faz:
 - Instala Docker + Compose plugin
-- Habilita UFW liberando 22 (SSH), 80, 443
-- Cria usuário `deploy` (sem senha, login só por SSH key)
+- Detecta a porta SSH ativa e libera **ela** + 80 + 443 no UFW (firewall)
+- Cria usuário `deploy` (sem senha, login só por SSH key — copia as chaves do root)
 
-Depois disso, **logue novamente como `deploy`**:
+Depois disso, **logue como `deploy`** (na mesma porta):
 
 ```bash
-ssh deploy@<ip-da-vps>
+ssh -p 22022 deploy@<ip-da-vps>
+# OU adicione um segundo alias no ~/.ssh/config:
+#   Host gym-deploy
+#       HostName <ip-da-vps>
+#       Port 22022
+#       User deploy
+# E aí:  ssh gym-deploy
 ```
 
 ---
