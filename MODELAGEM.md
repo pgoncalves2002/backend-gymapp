@@ -225,7 +225,7 @@ CREATE INDEX setlog_exercise_idx ON exercise_set_log (exercise_id);
 ## 5. Estrutura de apps Django sugerida
 
 ```
-backend-django/
+backend-gymapp/
 ├── manage.py
 ├── gym_api/                  # config (settings, urls, wsgi)
 │   ├── settings.py

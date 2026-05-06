@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."  # pasta backend-django/
+cd "$(dirname "$0")/../.."  # pasta backend-gymapp/
 
 if [[ ! -f .env.prod ]]; then
     echo "ERRO: .env.prod não existe. Copie de .env.prod.example e preencha." >&2

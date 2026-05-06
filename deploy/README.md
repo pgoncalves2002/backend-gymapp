@@ -16,10 +16,10 @@ Do "VPS Ubuntu vazia" até "API rodando em `https://api.seudominio.com.br`".
 
 ## 1) Subir o código pro GitHub
 
-O `git init` já foi feito dentro de `backend-django/` e o primeiro commit também. Agora basta:
+O `git init` já foi feito dentro de `backend-gymapp/` e o primeiro commit também. Agora basta:
 
 ```bash
-cd ~/Desktop/gym/backend-django
+cd ~/Desktop/gym/backend-gymapp
 
 # Crie um repo vazio no GitHub (sem README, sem .gitignore — eu já gerei).
 # Depois conecte e faça push:
@@ -44,8 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/<seu-user>/<seu-repo>/main/deploy/s
 
 # Opção B — clone primeiro e rode local
 apt-get update && apt-get install -y git
-git clone https://github.com/<seu-user>/<seu-repo>.git /opt/gym-backend
-bash /opt/gym-backend/deploy/scripts/bootstrap-vps.sh
+git clone https://github.com/<seu-user>/<seu-repo>.git /opt/backend-gymapp
+bash /opt/backend-gymapp/deploy/scripts/bootstrap-vps.sh
 ```
 
 O que esse script faz:
@@ -64,8 +64,8 @@ ssh deploy@<ip-da-vps>
 ## 3) Clonar o projeto e configurar ambiente
 
 ```bash
-git clone https://github.com/<seu-user>/<seu-repo>.git ~/gym-backend
-cd ~/gym-backend
+git clone https://github.com/<seu-user>/<seu-repo>.git ~/backend-gymapp
+cd ~/backend-gymapp
 
 # Copia o template e edita
 cp .env.prod.example .env.prod

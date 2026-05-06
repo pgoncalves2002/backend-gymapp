@@ -4,11 +4,11 @@
 # Roda na VPS, na pasta do projeto. Idempotente.
 #
 # Uso:
-#   bash backend-django/deploy/scripts/deploy.sh
+#   bash backend-gymapp/deploy/scripts/deploy.sh
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."  # pasta backend-django/
+cd "$(dirname "$0")/../.."  # pasta backend-gymapp/
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod"
 

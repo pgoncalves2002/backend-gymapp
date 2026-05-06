@@ -5,9 +5,9 @@
 # - cria usuário "deploy" não-root e adiciona ao grupo docker
 #
 # Como rodar (logado como root via SSH):
-#   curl -fsSL https://raw.githubusercontent.com/<seu-user>/<seu-repo>/main/backend-django/deploy/scripts/bootstrap-vps.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/<seu-user>/<seu-repo>/main/backend-gymapp/deploy/scripts/bootstrap-vps.sh | bash
 # OU já com o repo clonado:
-#   sudo bash backend-django/deploy/scripts/bootstrap-vps.sh
+#   sudo bash backend-gymapp/deploy/scripts/bootstrap-vps.sh
 
 set -euo pipefail
 
@@ -66,9 +66,9 @@ echo ""
 echo "Próximos passos:"
 echo "  1) Faça logout e logue de novo como deploy:  ssh deploy@<ip-da-vps>"
 echo "  2) Clone o repo:                              git clone <seu-repo> ~/gym"
-echo "  3) cd ~/gym/backend-django"
+echo "  3) cd ~/gym/backend-gymapp"
 echo "  4) Copie e ajuste:                            cp .env.prod.example .env.prod  &&  vim .env.prod"
 echo "  5) Rode:                                      bash deploy/scripts/init-letsencrypt.sh"
 echo "  6) Rode:                                      bash deploy/scripts/deploy.sh"
 echo ""
-echo "Detalhes em backend-django/deploy/README.md."
+echo "Detalhes em backend-gymapp/deploy/README.md."

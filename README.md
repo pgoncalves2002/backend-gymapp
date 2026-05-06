@@ -16,7 +16,7 @@ Backend REST para o app iOS `gym`. **Stack:** Django 5 · DRF · PostgreSQL 16 �
 ## Subindo o ambiente local (primeira vez)
 
 ```bash
-cd backend-django
+cd backend-gymapp
 
 # 1. Copiar variáveis de ambiente e ajustar se quiser
 cp .env.example .env
@@ -70,7 +70,7 @@ docker compose down -v
 ## Estrutura
 
 ```
-backend-django/
+backend-gymapp/
 ├── docker-compose.yml         # serviços web + db
 ├── Dockerfile                 # imagem Python 3.12 + deps
 ├── requirements.txt           # Django, DRF, simplejwt, psycopg, etc.
