@@ -1,0 +1,90 @@
+# Configuração de produção pra api do gym.
+# Renderizado pelo nginx oficial substituindo ${DJANGO_DOMAIN}.
+#
+# Pré-requisito pra esse arquivo subir limpo: certificados em
+# /etc/letsencrypt/live/${DJANGO_DOMAIN}/. O init-letsencrypt.sh cria certs
+# dummy antes do primeiro `up`, depois substitui pelos do Let's Encrypt.
+
+# ---------------------------------------------------------------------------
+# Upstream do gunicorn (serviço web do compose, porta 8000 interna)
+# ---------------------------------------------------------------------------
+upstream django {
+    server web:8000;
+}
+
+# ---------------------------------------------------------------------------
+# HTTP (porta 80): só serve o /.well-known pra renovação de cert e
+# redireciona o resto pra HTTPS.
+# ---------------------------------------------------------------------------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DJANGO_DOMAIN};
+
+    # Webroot que o certbot usa pra http-01 challenge.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Tudo o mais → HTTPS.
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ---------------------------------------------------------------------------
+# HTTPS (porta 443): proxy pro Django + serve estáticos e media direto.
+# ---------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${DJANGO_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DJANGO_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DJANGO_DOMAIN}/privkey.pem;
+
+    # Configurações TLS modernas (gera nota A no SSL Labs).
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Limite de upload — generoso pros GIFs de exercício (max 25MB pra ter folga).
+    client_max_body_size 25m;
+
+    # Headers de segurança.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "same-origin" always;
+
+    # ----- Estáticos servidos direto pelo nginx -----
+    location /static/ {
+        alias /srv/static/;
+        access_log off;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # ----- Media (uploads, ex.: GIFs de exercício) -----
+    location /media/ {
+        alias /srv/media/;
+        access_log off;
+        expires 7d;
+        add_header Cache-Control "public";
+    }
+
+    # ----- Tudo o mais cai no Django via gunicorn -----
+    location / {
+        proxy_pass http://django;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_redirect off;
+        proxy_read_timeout 60s;
+    }
+}

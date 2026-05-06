@@ -1,0 +1,64 @@
+# Compose de produção — sobrepõe o docker-compose.yml.
+# Uso na VPS:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env.prod up -d
+
+services:
+  db:
+    # Não expõe porta pro host: só fica acessível via rede interna do compose.
+    ports: !reset []
+    restart: always
+
+  web:
+    # CMD padrão do Dockerfile (gunicorn). Substitui o runserver do dev.
+    command: !reset
+    # Não bind-monta o código (a imagem já tem). Volume só pra static + media.
+    volumes:
+      - static_files:/app/staticfiles
+      - media_files:/app/media
+    # Não expõe a 8000 pro host — quem fala com o web é o nginx pela rede interna.
+    ports: !reset []
+    restart: always
+    env_file:
+      - .env.prod
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: gym_nginx
+    restart: always
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    # A imagem oficial do nginx renderiza /etc/nginx/templates/*.template
+    # substituindo ${VARIAVEIS} pelas vars do environment, e escreve em /etc/nginx/conf.d.
+    environment:
+      DJANGO_DOMAIN: ${DJANGO_DOMAIN}
+    volumes:
+      - ./deploy/nginx/templates:/etc/nginx/templates:ro
+      - static_files:/srv/static:ro
+      - media_files:/srv/media:ro
+      - certbot_www:/var/www/certbot:ro
+      - certbot_certs:/etc/letsencrypt:ro
+    # Recarrega nginx a cada 6h pra captar renovações de cert sem precisar restart.
+    command: >
+      /bin/sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g 'daemon off;'"
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: gym_certbot
+    restart: always
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_certs:/etc/letsencrypt
+    # Tenta renovar a cada 12h. Se não houver certificado ainda, falha em silêncio
+    # — o init-letsencrypt.sh é responsável por obter o cert da primeira vez.
+    entrypoint: >
+      /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+
+volumes:
+  pgdata:
+  static_files:
+  media_files:
+  certbot_www:
+  certbot_certs:
