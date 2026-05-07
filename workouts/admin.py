@@ -1,7 +1,6 @@
 from django.contrib import admin
 from django.db.models import Q
 
-from accounts.admin import StaffAccessibleAdminMixin
 from accounts.models import User
 
 from .models import Exercise, Workout, WorkoutExercise
@@ -11,7 +10,7 @@ from .models import Exercise, Workout, WorkoutExercise
 # Catálogo
 # ---------------------------------------------------------------------------
 @admin.register(Exercise)
-class ExerciseAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
+class ExerciseAdmin(admin.ModelAdmin):
     """
     Catálogo de exercícios.
 
@@ -45,38 +44,37 @@ class ExerciseAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        if request.user.is_superuser:
+        if request.user.has_full_access:
             return qs
         return qs.filter(Q(is_public=True) | Q(created_by=request.user))
 
     def get_readonly_fields(self, request, obj=None):
         ro = list(super().get_readonly_fields(request, obj))
-        if not request.user.is_superuser:
-            # Trainer não pode tornar exercício público nem mexer no created_by.
+        if not request.user.has_full_access:
+            # Trainer não marca público nem mexe em created_by.
             ro += ["is_public", "created_by"]
         return ro
 
     def save_model(self, request, obj, form, change):
         if not change and not obj.created_by_id:
             obj.created_by = request.user
-        # Trava: não-superuser nunca consegue salvar is_public=True.
-        if not request.user.is_superuser:
+        # Trava: sem full access, nunca consegue salvar is_public=True.
+        if not request.user.has_full_access:
             obj.is_public = False
         super().save_model(request, obj, form, change)
 
     def has_change_permission(self, request, obj=None):
         if not super().has_change_permission(request, obj):
             return False
-        if obj is None or request.user.is_superuser:
+        if obj is None or request.user.has_full_access:
             return True
-        # Trainer só edita exercícios que criou (públicos não, mesmo se ele criou
-        # — se virou público, pertence ao "catálogo geral" curado pelo admin).
+        # Trainer só edita exercícios privados que criou.
         return obj.created_by_id == request.user.id and not obj.is_public
 
     def has_delete_permission(self, request, obj=None):
         if not super().has_delete_permission(request, obj):
             return False
-        if obj is None or request.user.is_superuser:
+        if obj is None or request.user.has_full_access:
             return True
         return obj.created_by_id == request.user.id and not obj.is_public
 
@@ -97,7 +95,7 @@ class WorkoutExerciseInline(admin.TabularInline):
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         # No autocomplete de exercise, mostra só o que o trainer pode usar.
-        if db_field.name == "exercise" and not request.user.is_superuser:
+        if db_field.name == "exercise" and not request.user.has_full_access:
             kwargs["queryset"] = Exercise.objects.filter(
                 Q(is_public=True) | Q(created_by=request.user)
             )
@@ -105,7 +103,7 @@ class WorkoutExerciseInline(admin.TabularInline):
 
 
 @admin.register(Workout)
-class WorkoutAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
+class WorkoutAdmin(admin.ModelAdmin):
     """
     Fichas de treino.
 
@@ -123,40 +121,37 @@ class WorkoutAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        if request.user.is_superuser:
+        if request.user.has_full_access:
             return qs
         return qs.filter(trainer=request.user)
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        if not request.user.is_superuser:
+        if not request.user.has_full_access:
             if db_field.name == "student":
-                # Trainer escolhe APENAS entre os alunos que ele cadastrou.
                 kwargs["queryset"] = User.objects.filter(
                     role=User.Role.STUDENT,
                     created_by=request.user,
                 )
             elif db_field.name == "trainer":
-                # Trainer só pode ser ele mesmo.
                 kwargs["queryset"] = User.objects.filter(pk=request.user.pk)
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     def save_model(self, request, obj, form, change):
-        # Não-superuser sempre é o trainer da própria ficha.
-        if not request.user.is_superuser:
+        if not request.user.has_full_access:
             obj.trainer = request.user
         super().save_model(request, obj, form, change)
 
     def has_change_permission(self, request, obj=None):
         if not super().has_change_permission(request, obj):
             return False
-        if obj is None or request.user.is_superuser:
+        if obj is None or request.user.has_full_access:
             return True
         return obj.trainer_id == request.user.id
 
     def has_delete_permission(self, request, obj=None):
         if not super().has_delete_permission(request, obj):
             return False
-        if obj is None or request.user.is_superuser:
+        if obj is None or request.user.has_full_access:
             return True
         return obj.trainer_id == request.user.id
 

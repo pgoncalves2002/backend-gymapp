@@ -5,39 +5,19 @@ from django.db.models import Q
 from .models import User
 
 
-class StaffAccessibleAdminMixin:
-    """
-    Libera acesso ao admin pra qualquer usuário com `is_staff=True`,
-    SEM exigir permissions explícitas via Groups/Permissions do Django.
-
-    Permissões granulares (quem pode editar/deletar O QUÊ) ficam por conta
-    de cada ModelAdmin via has_change_permission/has_delete_permission +
-    get_queryset (escopo).
-    """
-
-    def has_module_permission(self, request):
-        return bool(request.user and request.user.is_active and request.user.is_staff)
-
-    def has_view_permission(self, request, obj=None):
-        return bool(request.user and request.user.is_active and request.user.is_staff)
-
-    def has_add_permission(self, request):
-        return bool(request.user and request.user.is_active and request.user.is_staff)
-
-
 @admin.register(User)
-class UserAdmin(StaffAccessibleAdminMixin, BaseUserAdmin):
+class UserAdmin(BaseUserAdmin):
     """
-    Admin de usuários com escopo por trainer.
+    Admin de usuários com escopo por papel.
 
     Visibilidade:
-        - Superuser: vê todos os usuários
-        - Trainer (is_staff=True, role=trainer): vê ele mesmo + alunos que cadastrou
-        - Outros: nada (não acessam o admin)
+        - Superuser ou role=Admin: vê TODOS os usuários.
+        - Trainer: vê ele mesmo + alunos que cadastrou.
+        - Outros: nada.
 
     Comportamento:
-        - Trainer ao criar usuário: created_by é setado automaticamente como ele.
-        - Trainer não pode editar/deletar usuários que não criou.
+        - Trainer ao criar usuário: created_by = ele; força aluno; sem is_staff.
+        - Trainer não pode promover usuário a staff/superuser/admin.
     """
 
     fieldsets = BaseUserAdmin.fieldsets + (
@@ -53,42 +33,42 @@ class UserAdmin(StaffAccessibleAdminMixin, BaseUserAdmin):
     # MARK: - Visibilidade
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        if request.user.is_superuser:
+        if request.user.has_full_access:
             return qs
-        # Trainer vê: ele mesmo + alunos que criou
+        # Trainer (e qualquer outro staff sem full access) vê: ele mesmo + alunos que criou
         return qs.filter(Q(pk=request.user.pk) | Q(created_by=request.user))
 
     # MARK: - Permissões granulares
     def has_change_permission(self, request, obj=None):
         if not super().has_change_permission(request, obj):
             return False
-        if obj is None or request.user.is_superuser:
+        if obj is None or request.user.has_full_access:
             return True
-        # Trainer só edita ele mesmo ou quem criou
         return obj.pk == request.user.pk or obj.created_by_id == request.user.id
 
     def has_delete_permission(self, request, obj=None):
         if not super().has_delete_permission(request, obj):
             return False
-        if obj is None or request.user.is_superuser:
+        if obj is None or request.user.has_full_access:
             return True
-        # Trainer não deleta ele mesmo, só os alunos que criou
         return obj.pk != request.user.pk and obj.created_by_id == request.user.id
 
-    # MARK: - Auto-set created_by + travas de campos
+    # MARK: - Auto-set + travas
     def save_model(self, request, obj, form, change):
-        if not change and not obj.created_by_id and not request.user.is_superuser:
+        # Trainer só cadastra alunos próprios
+        if not change and not obj.created_by_id and not request.user.has_full_access:
             obj.created_by = request.user
-        # Trainer não pode criar superuser nem outro trainer.
-        if not request.user.is_superuser:
+        # Trainer (sem full access) NUNCA consegue criar staff/superuser/admin/trainer.
+        if not request.user.has_full_access:
             obj.is_superuser = False
-            obj.is_staff = False
-            obj.role = User.Role.STUDENT  # força aluno
+            obj.role = User.Role.STUDENT
+            # is_staff é gerenciado pelo signal post_save baseado no role.
         super().save_model(request, obj, form, change)
 
     def get_readonly_fields(self, request, obj=None):
         ro = list(super().get_readonly_fields(request, obj))
-        if not request.user.is_superuser:
-            # Trainer não decide papel/staff/superuser/created_by
-            ro += ["is_staff", "is_superuser", "role", "created_by", "user_permissions", "groups"]
+        if not request.user.has_full_access:
+            # Trainer não decide papel/staff/superuser/created_by/groups
+            ro += ["is_staff", "is_superuser", "role", "created_by",
+                   "user_permissions", "groups"]
         return ro

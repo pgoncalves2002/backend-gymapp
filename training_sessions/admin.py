@@ -1,8 +1,6 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
-from accounts.admin import StaffAccessibleAdminMixin
-
 from .models import ExerciseSetLog, WorkoutSession
 
 
@@ -40,13 +38,20 @@ class ExerciseSetLogInline(admin.TabularInline):
 # Sessão de treino
 # ---------------------------------------------------------------------------
 @admin.register(WorkoutSession)
-class WorkoutSessionAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
+class WorkoutSessionAdmin(admin.ModelAdmin):
     list_display = ("workout", "student", "started_at", "finished_at", "status", "elapsed_seconds")
     list_filter = ("status",)
     search_fields = ("workout__name", "student__username")
     autocomplete_fields = ("workout", "student")
     readonly_fields = ("started_at",)
     inlines = [ExerciseSetLogInline]
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        if request.user.has_full_access:
+            return qs
+        # Trainer vê as sessões dos alunos que ele cadastrou.
+        return qs.filter(student__created_by=request.user)
 
 
 # Nota: ExerciseSetLog NÃO é registrado como admin próprio.

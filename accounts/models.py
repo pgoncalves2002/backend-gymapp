@@ -16,6 +16,7 @@ class User(AbstractUser):
     class Role(models.TextChoices):
         STUDENT = "student", "Aluno"
         TRAINER = "trainer", "Personal Trainer"
+        ADMIN = "admin", "Administrador"
 
     role = models.CharField(
         "Função",
@@ -53,3 +54,13 @@ class User(AbstractUser):
     @property
     def is_student(self) -> bool:
         return self.role == self.Role.STUDENT
+
+    @property
+    def is_admin_role(self) -> bool:
+        """Role 'Administrador' (não confundir com `is_superuser` do Django)."""
+        return self.role == self.Role.ADMIN
+
+    @property
+    def has_full_access(self) -> bool:
+        """Quem pode tudo: superuser do Django ou role=Administrador."""
+        return self.is_superuser or self.is_admin_role
