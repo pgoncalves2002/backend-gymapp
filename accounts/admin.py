@@ -44,13 +44,17 @@ class UserAdmin(BaseUserAdmin):
             return False
         if obj is None or request.user.has_full_access:
             return True
-        return obj.pk == request.user.pk or obj.created_by_id == request.user.id
+        # Trainer só pode editar alunos que cadastrou.
+        # NÃO pode editar o próprio cadastro (regra de negócio).
+        # Pra trocar senha continua usando /admin/password_change/ direto.
+        return obj.created_by_id == request.user.id and obj.pk != request.user.pk
 
     def has_delete_permission(self, request, obj=None):
         if not super().has_delete_permission(request, obj):
             return False
         if obj is None or request.user.has_full_access:
             return True
+        # Trainer não deleta a si mesmo, só os alunos que criou.
         return obj.pk != request.user.pk and obj.created_by_id == request.user.id
 
     # MARK: - Auto-set + travas
