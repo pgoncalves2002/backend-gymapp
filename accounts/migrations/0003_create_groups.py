@@ -52,8 +52,9 @@ def remove_groups(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        # Garante que a 0002 (alter role choices + add created_by) rodou.
-        ("accounts", "0002_user_created_by_alter_user_role"),
+        # Nome real da 0002 que o makemigrations gerou na VPS (alter user options
+        # + add created_by + alter role). Foi gerada lá antes de eu colocar a 0003.
+        ("accounts", "0002_alter_user_options_user_created_by_and_more"),
         # Garante que content_types e permissions já existem pros models nossos.
         ("workouts", "0001_initial"),
         ("training_sessions", "0001_initial"),
