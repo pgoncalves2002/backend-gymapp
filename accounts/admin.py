@@ -5,8 +5,28 @@ from django.db.models import Q
 from .models import User
 
 
+class StaffAccessibleAdminMixin:
+    """
+    Libera acesso ao admin pra qualquer usuário com `is_staff=True`,
+    SEM exigir permissions explícitas via Groups/Permissions do Django.
+
+    Permissões granulares (quem pode editar/deletar O QUÊ) ficam por conta
+    de cada ModelAdmin via has_change_permission/has_delete_permission +
+    get_queryset (escopo).
+    """
+
+    def has_module_permission(self, request):
+        return bool(request.user and request.user.is_active and request.user.is_staff)
+
+    def has_view_permission(self, request, obj=None):
+        return bool(request.user and request.user.is_active and request.user.is_staff)
+
+    def has_add_permission(self, request):
+        return bool(request.user and request.user.is_active and request.user.is_staff)
+
+
 @admin.register(User)
-class UserAdmin(BaseUserAdmin):
+class UserAdmin(StaffAccessibleAdminMixin, BaseUserAdmin):
     """
     Admin de usuários com escopo por trainer.
 

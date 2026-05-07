@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.db.models import Q
 
+from accounts.admin import StaffAccessibleAdminMixin
 from accounts.models import User
 
 from .models import Exercise, Workout, WorkoutExercise
@@ -10,7 +11,7 @@ from .models import Exercise, Workout, WorkoutExercise
 # Catálogo
 # ---------------------------------------------------------------------------
 @admin.register(Exercise)
-class ExerciseAdmin(admin.ModelAdmin):
+class ExerciseAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
     """
     Catálogo de exercícios.
 
@@ -104,7 +105,7 @@ class WorkoutExerciseInline(admin.TabularInline):
 
 
 @admin.register(Workout)
-class WorkoutAdmin(admin.ModelAdmin):
+class WorkoutAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
     """
     Fichas de treino.
 

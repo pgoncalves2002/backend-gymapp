@@ -1,6 +1,8 @@
 from django.contrib import admin
 from django.utils.html import format_html
 
+from accounts.admin import StaffAccessibleAdminMixin
+
 from .models import ExerciseSetLog, WorkoutSession
 
 
@@ -38,7 +40,7 @@ class ExerciseSetLogInline(admin.TabularInline):
 # Sessão de treino
 # ---------------------------------------------------------------------------
 @admin.register(WorkoutSession)
-class WorkoutSessionAdmin(admin.ModelAdmin):
+class WorkoutSessionAdmin(StaffAccessibleAdminMixin, admin.ModelAdmin):
     list_display = ("workout", "student", "started_at", "finished_at", "status", "elapsed_seconds")
     list_filter = ("status",)
     search_fields = ("workout__name", "student__username")
