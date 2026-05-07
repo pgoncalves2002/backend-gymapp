@@ -47,8 +47,8 @@ class WorkoutSessionAdmin(admin.ModelAdmin):
     inlines = [ExerciseSetLogInline]
 
 
-@admin.register(ExerciseSetLog)
-class ExerciseSetLogAdmin(admin.ModelAdmin):
-    list_display = ("session", "workout_exercise", "set_number", "load_kg", "is_completed", "completed_at")
-    list_filter = ("is_completed",)
-    autocomplete_fields = ("session", "workout_exercise")
+# Nota: ExerciseSetLog NÃO é registrado como admin próprio.
+# Séries executadas são SEMPRE acessadas via inline dentro de WorkoutSession
+# (com renderização readonly + indicador "não concluída"). Manter um admin
+# separado polui o menu sem ganho — e exigia registrar WorkoutExercise como
+# admin só pra `autocomplete_fields`, o que duplicava entrada no menu.
