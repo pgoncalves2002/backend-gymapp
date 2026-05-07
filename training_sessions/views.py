@@ -7,7 +7,8 @@ Regras de visibilidade:
     - Aluno só pode atualizar séries (`load_kg`, `is_completed`) das próprias sessões.
 """
 
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, status, viewsets
+from rest_framework.response import Response
 
 from accounts.permissions import IsSessionOwner
 
@@ -33,7 +34,7 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         return (
             WorkoutSession.objects
             .select_related("workout", "student")
-            .prefetch_related("set_logs", "set_logs__exercise")
+            .prefetch_related("set_logs", "set_logs__workout_exercise")
             .filter(student=self.request.user)
         )
 
@@ -50,6 +51,24 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         ctx = super().get_serializer_context()
         ctx["request"] = self.request
         return ctx
+
+    def create(self, request, *args, **kwargs):
+        """
+        POST /api/sessions/ — cria a session + auto-cria os set_logs.
+
+        Response: usa o DetailSerializer (não o CreateSerializer) pra que o
+        cliente receba a session COMPLETA com `set_logs` aninhados — assim
+        ele consegue mapear os IDs sem precisar de um GET extra.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        instance = serializer.instance
+        detail = WorkoutSessionDetailSerializer(
+            instance, context=self.get_serializer_context()
+        )
+        headers = self.get_success_headers(serializer.data)
+        return Response(detail.data, status=status.HTTP_201_CREATED, headers=headers)
 
 
 class ExerciseSetLogViewSet(viewsets.ModelViewSet):
@@ -68,6 +87,6 @@ class ExerciseSetLogViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return (
             ExerciseSetLog.objects
-            .select_related("session", "exercise")
+            .select_related("session", "workout_exercise")
             .filter(session__student=self.request.user)
         )
