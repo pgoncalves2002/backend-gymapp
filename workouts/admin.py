@@ -56,12 +56,6 @@ class WorkoutAdmin(admin.ModelAdmin):
     readonly_fields = ("created_at", "updated_at")
 
 
-# ---------------------------------------------------------------------------
-# Item da ficha (visualização separada — útil pra debug)
-# ---------------------------------------------------------------------------
-@admin.register(WorkoutExercise)
-class WorkoutExerciseAdmin(admin.ModelAdmin):
-    list_display = ("workout", "order", "exercise", "sets", "reps", "load_kg", "rest_seconds")
-    list_filter = ("workout__day_label",)
-    search_fields = ("workout__name", "exercise__name")
-    autocomplete_fields = ("workout", "exercise")
+# Nota: WorkoutExercise NÃO é registrado como admin próprio. Ele aparece
+# apenas como inline dentro de WorkoutAdmin, que é o fluxo natural do trainer.
+# A tabela continua existindo no banco — só não polui o menu lateral.
