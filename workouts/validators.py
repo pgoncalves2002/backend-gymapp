@@ -23,11 +23,11 @@ def validate_demo_gif_size(file) -> None:
 def exercise_demo_upload_path(instance, filename: str) -> str:
     """
     Define onde o arquivo é salvo:
-        media/exercises/<workout_id>/<exercise_id>.<ext>
+        media/exercises/<exercise_id>.<ext>
 
     Como Exercise.id é UUID gerado por default antes do save, ele já existe
     quando o upload chega. Renomear pelo `id` evita colisões e dispensa
     sufixos automáticos do Django pra arquivos com o mesmo nome.
     """
     ext = os.path.splitext(filename)[1].lower() or ".gif"
-    return f"exercises/{instance.workout_id}/{instance.id}{ext}"
+    return f"exercises/{instance.id}{ext}"
