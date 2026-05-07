@@ -70,6 +70,31 @@ class WorkoutSessionViewSet(viewsets.ModelViewSet):
         headers = self.get_success_headers(serializer.data)
         return Response(detail.data, status=status.HTTP_201_CREATED, headers=headers)
 
+    def update(self, request, *args, **kwargs):
+        """
+        PUT/PATCH /api/sessions/{id}/
+
+        Mesma estratégia do `create`: usa o UpdateSerializer pra validar
+        (campos limitados), mas retorna o DetailSerializer pra que o cliente
+        receba a session completa — evita decoders quebrados em apps que
+        esperam o payload full.
+        """
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        # Recarrega pra pegar campos auto-setados (ex.: finished_at em status terminal).
+        instance.refresh_from_db()
+        detail = WorkoutSessionDetailSerializer(
+            instance, context=self.get_serializer_context()
+        )
+        return Response(detail.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
+
 
 class ExerciseSetLogViewSet(viewsets.ModelViewSet):
     """
