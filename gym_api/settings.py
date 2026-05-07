@@ -116,12 +116,13 @@ DATABASES = {
 # User custom (com role student/trainer) — definido em accounts.User
 AUTH_USER_MODEL = "accounts.User"
 
-AUTH_PASSWORD_VALIDATORS = [
-    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
-    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
-    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
-]
+# TEMPORÁRIO — sem validação de senha pra facilitar testes em dev.
+# ANTES DE PRODUÇÃO REAL, restaurar pra:
+#     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+#     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+#     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+#     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+AUTH_PASSWORD_VALIDATORS: list = []
 
 # ---------------------------------------------------------------------------
 # DRF + JWT
