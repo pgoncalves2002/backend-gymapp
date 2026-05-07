@@ -27,6 +27,16 @@ class User(AbstractUser):
     display_name = models.CharField("Nome de exibição", max_length=80, blank=True)
     birth_date = models.DateField("Data de nascimento", null=True, blank=True)
 
+    # Quem cadastrou este usuário (geralmente o trainer dono dos alunos).
+    # Usada pra escopar o admin: trainer só vê os alunos que ele criou.
+    created_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name="users_created",
+        verbose_name="Cadastrado por",
+    )
+
     class Meta:
         ordering = ["username"]
         verbose_name = "Usuário"

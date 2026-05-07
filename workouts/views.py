@@ -47,20 +47,27 @@ class ExerciseViewSet(viewsets.ModelViewSet):
         return qs.filter(Q(is_public=True) | Q(created_by=user)).distinct()
 
     def perform_create(self, serializer):
-        # Quem cria fica registrado e o exercício nasce privado por default.
-        serializer.save(created_by=self.request.user)
+        user = self.request.user
+        extra = {"created_by": user}
+        # Apenas superuser pode marcar exercício como público.
+        if not user.is_superuser:
+            extra["is_public"] = False
+        serializer.save(**extra)
 
     def perform_update(self, serializer):
         instance = serializer.instance
         user = self.request.user
-        if not (user.is_staff or instance.created_by_id == user.id):
-            raise PermissionDenied("Só o criador (ou admin) pode editar este exercício.")
+        if not (user.is_superuser or instance.created_by_id == user.id):
+            raise PermissionDenied("Só o criador (ou superuser) pode editar este exercício.")
+        # Trainer não pode promover privado → público.
+        if not user.is_superuser and serializer.validated_data.get("is_public", False):
+            raise PermissionDenied("Apenas o superuser pode marcar exercícios como públicos.")
         serializer.save()
 
     def perform_destroy(self, instance):
         user = self.request.user
-        if not (user.is_staff or instance.created_by_id == user.id):
-            raise PermissionDenied("Só o criador (ou admin) pode remover este exercício.")
+        if not (user.is_superuser or instance.created_by_id == user.id):
+            raise PermissionDenied("Só o criador (ou superuser) pode remover este exercício.")
         instance.delete()
 
 
