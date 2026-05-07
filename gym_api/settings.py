@@ -127,6 +127,8 @@ AUTH_PASSWORD_VALIDATORS = [
 # DRF + JWT
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
+    # DecimalField como número JSON (não string) — compat com Swift Decimal.
+    "COERCE_DECIMAL_TO_STRING": False,
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
