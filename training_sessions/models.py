@@ -83,6 +83,10 @@ class ExerciseSetLog(models.Model):
         "Número da série", validators=[MinValueValidator(1)]
     )
     load_kg = models.DecimalField("Carga real (kg)", max_digits=5, decimal_places=2)
+    reps_done = models.PositiveSmallIntegerField(
+        "Repetições feitas", default=0,
+        help_text="Quantas repetições o aluno conseguiu fazer nesta série.",
+    )
     is_completed = models.BooleanField("Concluída", default=False)
     completed_at = models.DateTimeField("Concluída em", null=True, blank=True)
 

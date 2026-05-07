@@ -17,6 +17,7 @@ class ExerciseSetLogInline(admin.TabularInline):
         "workout_exercise",
         "set_number",
         "load_kg",
+        "reps_done",
         "completion_display",
     )
     readonly_fields = fields  # tudo readonly — histórico não se edita

@@ -26,6 +26,7 @@ class ExerciseSetLogSerializer(serializers.ModelSerializer):
             "workout_exercise",
             "set_number",
             "load_kg",
+            "reps_done",
             "is_completed",
             "completed_at",
         )
