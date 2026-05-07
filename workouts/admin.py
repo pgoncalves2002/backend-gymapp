@@ -132,9 +132,18 @@ class WorkoutAdmin(admin.ModelAdmin):
                     role=User.Role.STUDENT,
                     created_by=request.user,
                 )
-            elif db_field.name == "trainer":
-                kwargs["queryset"] = User.objects.filter(pk=request.user.pk)
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def get_exclude(self, request, obj=None):
+        """
+        Pra trainer (sem full access): esconde o campo `trainer` do form —
+        ele é implicitamente o user logado, setado em save_model. Evita confusão
+        do trainer escolhendo outra pessoa (que não funcionaria de qualquer jeito).
+        """
+        excluded = list(super().get_exclude(request, obj) or [])
+        if not request.user.has_full_access:
+            excluded.append("trainer")
+        return excluded
 
     def save_model(self, request, obj, form, change):
         if not request.user.has_full_access:
