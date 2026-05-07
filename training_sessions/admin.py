@@ -6,8 +6,8 @@ from .models import ExerciseSetLog, WorkoutSession
 class ExerciseSetLogInline(admin.TabularInline):
     model = ExerciseSetLog
     extra = 0
-    fields = ("exercise", "set_number", "load_kg", "is_completed", "completed_at")
-    autocomplete_fields = ("exercise",)
+    fields = ("workout_exercise", "set_number", "load_kg", "is_completed", "completed_at")
+    autocomplete_fields = ("workout_exercise",)
 
 
 @admin.register(WorkoutSession)
@@ -22,6 +22,6 @@ class WorkoutSessionAdmin(admin.ModelAdmin):
 
 @admin.register(ExerciseSetLog)
 class ExerciseSetLogAdmin(admin.ModelAdmin):
-    list_display = ("session", "exercise", "set_number", "load_kg", "is_completed", "completed_at")
+    list_display = ("session", "workout_exercise", "set_number", "load_kg", "is_completed", "completed_at")
     list_filter = ("is_completed",)
-    autocomplete_fields = ("session", "exercise")
+    autocomplete_fields = ("session", "workout_exercise")

@@ -1,9 +1,9 @@
 """
 Histórico de execuções de treino.
 
-O struct `SetEntry` do Swift é runtime e some ao sair da tela —
-estas tabelas tornam esse progresso persistente, possibilitando histórico,
-estatísticas e progressão de carga.
+ExerciseSetLog agora referencia WorkoutExercise (instância na ficha) em vez
+de Exercise (catálogo). Isso garante que cada série logada está vinculada à
+parametrização específica da ficha.
 """
 
 import uuid
@@ -12,7 +12,7 @@ from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 
-from workouts.models import Exercise, Workout
+from workouts.models import Workout, WorkoutExercise
 
 
 class WorkoutSession(models.Model):
@@ -39,7 +39,6 @@ class WorkoutSession(models.Model):
 
     started_at = models.DateTimeField("Iniciada em", auto_now_add=True)
     finished_at = models.DateTimeField("Finalizada em", null=True, blank=True)
-    # corresponde ao workoutElapsedSeconds do app Swift
     elapsed_seconds = models.IntegerField("Tempo total (s)", default=0)
     status = models.CharField(
         "Status",
@@ -63,7 +62,8 @@ class WorkoutSession(models.Model):
 class ExerciseSetLog(models.Model):
     """
     Cada série de cada exercício de uma sessão.
-    Equivalente persistente do struct `SetEntry` do Swift.
+    Referencia WorkoutExercise (a instância na ficha), preservando o contexto
+    completo da série mesmo que o catálogo seja editado depois.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -73,11 +73,11 @@ class ExerciseSetLog(models.Model):
         related_name="set_logs",
         verbose_name="Sessão",
     )
-    exercise = models.ForeignKey(
-        Exercise,
+    workout_exercise = models.ForeignKey(
+        WorkoutExercise,
         on_delete=models.CASCADE,
         related_name="set_logs",
-        verbose_name="Exercício",
+        verbose_name="Exercício na ficha",
     )
     set_number = models.PositiveSmallIntegerField(
         "Número da série", validators=[MinValueValidator(1)]
@@ -87,16 +87,16 @@ class ExerciseSetLog(models.Model):
     completed_at = models.DateTimeField("Concluída em", null=True, blank=True)
 
     class Meta:
-        ordering = ["exercise__order", "set_number"]
+        ordering = ["workout_exercise__order", "set_number"]
         constraints = [
             models.UniqueConstraint(
-                fields=["session", "exercise", "set_number"],
-                name="setlog_unique_per_session_exercise",
+                fields=["session", "workout_exercise", "set_number"],
+                name="setlog_unique_per_session_workoutexercise",
             ),
         ]
         indexes = [
             models.Index(fields=["session"]),
-            models.Index(fields=["exercise"]),
+            models.Index(fields=["workout_exercise"]),
         ]
         verbose_name = "Série executada"
         verbose_name_plural = "Séries executadas"

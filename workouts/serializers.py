@@ -1,52 +1,75 @@
 """
 Serializers do app workouts.
 
-Estratégia:
-    - List: sem exercises aninhados, mas com `exercises_count` e
-      `estimated_duration_minutes` (replicando a heurística do app Swift).
-    - Detail: traz `exercises` completos.
-    - Escrita: `Workout` cria sem exercises; exercises são manipulados via
-      seu próprio endpoint /api/exercises/.
+Estrutura:
+    - ExerciseSerializer: catálogo (read/write).
+    - WorkoutExerciseSerializer: item de ficha — `exercise` aninhado read-only,
+      mas escrita aceita `exercise` como PK (selecionar do catálogo).
+    - WorkoutListSerializer / WorkoutDetailSerializer: ficha com agregados
+      (exercises_count, estimated_duration_minutes) e expansão completa.
 """
 
 from rest_framework import serializers
 
 from accounts.models import User
 
-from .models import Exercise, Workout
+from .models import Exercise, Workout, WorkoutExercise
 
 
 # ---------------------------------------------------------------------------
-# Exercise
+# Catálogo
 # ---------------------------------------------------------------------------
 class ExerciseSerializer(serializers.ModelSerializer):
-    # FileField padrão do DRF: na leitura devolve URL absoluta (ex.:
-    # http://localhost:8000/media/exercises/<wid>/<eid>.gif). Na escrita
-    # aceita arquivo via multipart/form-data com a chave `demo_gif`.
+    created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+
     class Meta:
         model = Exercise
         fields = (
             "id",
-            "workout",
-            "order",
             "name",
             "muscle_group",
+            "default_technique_note",
+            "demo_gif",
+            "is_public",
+            "created_by",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_by", "created_at", "updated_at")
+
+
+# ---------------------------------------------------------------------------
+# Item da ficha
+# ---------------------------------------------------------------------------
+class WorkoutExerciseSerializer(serializers.ModelSerializer):
+    """
+    Leitura: `exercise_detail` traz o catálogo aninhado (com nome, gif, etc.).
+    Escrita: `exercise` é a PK do Exercise no catálogo.
+    """
+
+    exercise_detail = ExerciseSerializer(source="exercise", read_only=True)
+
+    class Meta:
+        model = WorkoutExercise
+        fields = (
+            "id",
+            "workout",
+            "exercise",         # PK na escrita
+            "exercise_detail",  # objeto na leitura
+            "order",
             "sets",
             "reps",
             "load_kg",
             "rest_seconds",
             "technique_note",
-            "demo_gif",
         )
-        read_only_fields = ("id",)
+        read_only_fields = ("id", "exercise_detail")
 
 
 # ---------------------------------------------------------------------------
-# Workout
+# Ficha
 # ---------------------------------------------------------------------------
 class _WorkoutBaseSerializer(serializers.ModelSerializer):
-    """Base com campos comuns de leitura."""
-
     student = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.filter(role=User.Role.STUDENT)
     )
@@ -72,33 +95,31 @@ class _WorkoutBaseSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "trainer", "created_at", "updated_at")
 
     def get_exercises_count(self, obj: Workout) -> int:
-        # `exercises_count` vem anotado pelo ViewSet (annotate Count) quando possível;
-        # cai pra .count() se a annotation não existir.
         cached = getattr(obj, "_exercises_count", None)
         if cached is not None:
             return cached
-        return obj.exercises.count()
+        return obj.workout_exercises.count()
 
     def get_estimated_duration_minutes(self, obj: Workout) -> int:
         """
-        Heurística idêntica à `Workout.estimatedDurationMinutes` do Swift:
-            ~60s por série + tempo de descanso, mínimo 15 minutos.
+        Heurística idêntica à do app Swift:
+            ~60s por série + tempo de descanso, mínimo 15 min.
         """
-        exercises = list(obj.exercises.all())
-        total_sets = sum(e.sets for e in exercises)
-        rest_seconds = sum(e.sets * e.rest_seconds for e in exercises)
+        items = list(obj.workout_exercises.all())
+        total_sets = sum(it.sets for it in items)
+        rest_seconds = sum(it.sets * it.rest_seconds for it in items)
         total = (total_sets * 60) + rest_seconds
         return max(15, total // 60)
 
 
 class WorkoutListSerializer(_WorkoutBaseSerializer):
-    """Para `GET /api/workouts/` — sem o array completo de exercícios."""
+    """`GET /api/workouts/` — sem o array completo de exercícios."""
 
 
 class WorkoutDetailSerializer(_WorkoutBaseSerializer):
-    """Para `GET /api/workouts/{id}/` — com `exercises` aninhado (read-only)."""
+    """`GET /api/workouts/{id}/` — com `workout_exercises` aninhado."""
 
-    exercises = ExerciseSerializer(many=True, read_only=True)
+    workout_exercises = WorkoutExerciseSerializer(many=True, read_only=True)
 
     class Meta(_WorkoutBaseSerializer.Meta):
-        fields = _WorkoutBaseSerializer.Meta.fields + ("exercises",)
+        fields = _WorkoutBaseSerializer.Meta.fields + ("workout_exercises",)

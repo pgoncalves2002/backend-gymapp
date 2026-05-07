@@ -1,5 +1,7 @@
 """
 Serializers do app training_sessions.
+
+ExerciseSetLog agora referencia WorkoutExercise (instância na ficha).
 """
 
 from django.utils import timezone
@@ -21,13 +23,15 @@ class ExerciseSetLogSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "session",
-            "exercise",
+            "workout_exercise",
             "set_number",
             "load_kg",
             "is_completed",
             "completed_at",
         )
-        read_only_fields = ("id", "session", "exercise", "set_number", "completed_at")
+        read_only_fields = (
+            "id", "session", "workout_exercise", "set_number", "completed_at",
+        )
 
     def update(self, instance: ExerciseSetLog, validated_data: dict) -> ExerciseSetLog:
         new_completed = validated_data.get("is_completed", instance.is_completed)
@@ -86,7 +90,7 @@ class WorkoutSessionCreateSerializer(serializers.ModelSerializer):
     Para `POST /api/sessions/`. Recebe apenas `workout`; o backend:
         - valida que o workout pertence ao aluno autenticado;
         - cria a session com status=in_progress;
-        - auto-cria ExerciseSetLog pra cada série de cada exercício.
+        - auto-cria ExerciseSetLog pra cada série de cada WorkoutExercise.
     """
 
     class Meta:
@@ -110,16 +114,15 @@ class WorkoutSessionCreateSerializer(serializers.ModelSerializer):
             status=WorkoutSession.Status.IN_PROGRESS,
         )
 
-        # Espelha o `loadSetsForExercise` do app Swift: pra cada exercício,
-        # cria N séries com a carga sugerida (ou 0 se não houver).
+        # Pra cada item da ficha, cria N séries com carga sugerida.
         set_logs: list[ExerciseSetLog] = []
-        for exercise in workout.exercises.all():
-            suggested = exercise.load_kg if exercise.load_kg is not None else 0
-            for n in range(1, exercise.sets + 1):
+        for we in workout.workout_exercises.all():
+            suggested = we.load_kg if we.load_kg is not None else 0
+            for n in range(1, we.sets + 1):
                 set_logs.append(
                     ExerciseSetLog(
                         session=session,
-                        exercise=exercise,
+                        workout_exercise=we,
                         set_number=n,
                         load_kg=suggested,
                         is_completed=False,
