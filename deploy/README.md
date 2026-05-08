@@ -191,7 +191,62 @@ Pronto. Acesse `https://coach.seudominio.com.br`.
 
 ---
 
-## 7) Atualizações futuras (deploy contínuo)
+## 7) Preservar o banco em deploys (IMPORTANTE)
+
+O volume Docker `pgdata` fica preservado em qualquer `docker compose up -d` ou `restart` — só é apagado se rodar `docker compose down -v` (com `-v`). Os scripts deste projeto **nunca** usam `-v`, então em uso normal os dados ficam.
+
+Mesmo assim, antes de qualquer deploy faça **backup explícito**:
+
+```bash
+ssh deploy@<ip-da-vps>
+cd ~/backend-gymapp
+bash deploy/scripts/backup-db.sh   # gera backups/gym-YYYY-MM-DD-HHMM.sql.gz
+```
+
+Restaurar (em caso de emergência):
+
+```bash
+gunzip -c backups/gym-2026-05-08-1700.sql.gz | \
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+    --env-file .env.prod exec -T db psql -U gym gym
+```
+
+### Risco específico em deploys com migrations novas
+
+Se o seu deploy traz arquivos de migration que já existiam apenas na VPS (gerados localmente lá com `makemigrations`), pode haver colisão no `git pull`:
+
+```
+error: The following untracked working tree files would be overwritten by merge:
+  accounts/migrations/0002_*.py
+```
+
+**Antes do `git pull`**, verifique se o conteúdo é idêntico:
+
+```bash
+# Na VPS, na pasta do projeto:
+md5sum accounts/migrations/0002_alter_user_options_user_created_by_and_more.py \
+       workouts/migrations/0001_initial.py \
+       training_sessions/migrations/0001_initial.py 2>/dev/null
+```
+
+Compare com o que está no commit local. Se forem idênticos, mova as locais pra fora antes de pullar:
+
+```bash
+mkdir -p /tmp/migrations-vps-backup
+mv accounts/migrations/0002_alter_user_options_user_created_by_and_more.py /tmp/migrations-vps-backup/ 2>/dev/null || true
+mv workouts/migrations/0001_initial.py /tmp/migrations-vps-backup/ 2>/dev/null || true
+mv training_sessions/migrations/0001_initial.py /tmp/migrations-vps-backup/ 2>/dev/null || true
+git pull --ff-only
+# Verifica que o que veio do git é idêntico ao backup
+diff /tmp/migrations-vps-backup/0002_alter_user_options_user_created_by_and_more.py \
+     accounts/migrations/0002_alter_user_options_user_created_by_and_more.py
+```
+
+Como o `django_migrations` na tabela do Postgres já tem essas 3 entries (estavam aplicadas), o `migrate` do `deploy.sh` vai detectar como **already applied** e não vai re-rodar nada. Os dados ficam intactos.
+
+---
+
+## 8) Atualizações futuras (deploy contínuo)
 
 ### Backend
 
@@ -200,6 +255,7 @@ A cada push no `main`:
 ```bash
 ssh deploy@<ip-da-vps>
 cd ~/backend-gymapp
+bash deploy/scripts/backup-db.sh    # SEMPRE antes de deploy
 bash deploy/scripts/deploy.sh
 ```
 

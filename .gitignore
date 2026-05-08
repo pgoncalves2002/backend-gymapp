@@ -39,6 +39,11 @@ Thumbs.db
 # Docker
 docker-volumes/
 
+# Dumps do banco (criados por backup-db.sh) — nunca commitar dados de prod
+backups/
+*.sql
+*.sql.gz
+
 # Chaves SSH não devem ficar no repo
 key.txt
 key.txt.pub
