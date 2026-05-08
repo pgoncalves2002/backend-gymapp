@@ -34,6 +34,16 @@ if [[ -z "$DOMAIN" || -z "$EMAIL" ]]; then
     exit 1
 fi
 
+# COACH_DOMAIN tem que ser FQDN puro (ex.: coach.foo.com), sem protocolo.
+# Cair pra Let's Encrypt com "https://..." ou "http://..." gera erro
+# "appears to be a URL, not a FQDN" + cria pastas bagunçadas em /etc/letsencrypt.
+if [[ "$DOMAIN" == *://* ]]; then
+    echo "ERRO: COACH_DOMAIN não pode ter protocolo. Valor atual: '$DOMAIN'" >&2
+    echo "      Edite .env.prod removendo 'http://' ou 'https://' do começo." >&2
+    echo "      Ex. correto: COACH_DOMAIN=coach.seudominio.com.br" >&2
+    exit 1
+fi
+
 echo "==> Subdomínio do SPA: $DOMAIN"
 
 # Confirma DNS antes de gastar quota do Let's Encrypt.
