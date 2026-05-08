@@ -2,14 +2,22 @@
 Views do app accounts.
 
 Os endpoints `login/` e `refresh/` reaproveitam as views do simplejwt
-(em urls.py); aqui só implementamos `me/` e `register/`.
+(em urls.py); aqui implementamos `me/`, `register/` e o `StudentsViewSet`
+usado pelo SPA do personal.
 """
 
-from rest_framework import generics, permissions
+from rest_framework import generics, permissions, viewsets
+from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import User
-from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
+from .permissions import IsTrainer
+from .serializers import (
+    LoginSerializer,
+    RegisterSerializer,
+    StudentSerializer,
+    UserSerializer,
+)
 
 
 class LoginView(TokenObtainPairView):
@@ -38,3 +46,47 @@ class MeView(generics.RetrieveUpdateAPIView):
 
     def get_object(self) -> User:
         return self.request.user
+
+
+# ---------------------------------------------------------------------------
+# Alunos do trainer — usado pelo SPA do personal
+# ---------------------------------------------------------------------------
+class StudentsViewSet(viewsets.ModelViewSet):
+    """
+    /api/auth/students/        — list/create os alunos do trainer logado
+    /api/auth/students/{id}/   — retrieve/update/partial_update/destroy
+
+    Visibilidade:
+        - Trainer: vê apenas alunos onde `created_by == self`.
+        - Admin/staff: vê todos os alunos.
+        - Student: 403 (não é caso de uso desse endpoint).
+
+    No POST, `created_by` é setado automaticamente como o trainer logado
+    e `role` é forçado a STUDENT (via serializer).
+    """
+
+    serializer_class = StudentSerializer
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = User.objects.filter(role=User.Role.STUDENT).order_by("display_name", "username")
+        if user.is_staff or user.is_superuser or user.has_full_access:
+            return qs
+        return qs.filter(created_by=user)
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        user = self.request.user
+        if not (user.has_full_access or instance.created_by_id == user.id):
+            raise PermissionDenied("Só o trainer que cadastrou pode editar este aluno.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if not (user.has_full_access or instance.created_by_id == user.id):
+            raise PermissionDenied("Só o trainer que cadastrou pode remover este aluno.")
+        instance.delete()

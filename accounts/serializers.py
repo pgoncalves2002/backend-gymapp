@@ -60,6 +60,66 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
 
 
+class StudentSerializer(serializers.ModelSerializer):
+    """
+    Aluno do trainer — usado pelo SPA do personal pra listar/criar/editar
+    seus alunos. Diferente do RegisterSerializer (que é endpoint público
+    de auto-cadastro), aqui a criação é feita pelo trainer logado e
+    `created_by` é setado automaticamente no view.
+
+    `password` é write-only e obrigatório no create; opcional no update
+    (senha só muda se vier).
+    """
+
+    password = serializers.CharField(
+        write_only=True,
+        required=False,
+        validators=[validate_password],
+        style={"input_type": "password"},
+        allow_blank=False,
+    )
+    is_trainer = serializers.BooleanField(read_only=True)
+    is_student = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "username",
+            "email",
+            "password",
+            "display_name",
+            "birth_date",
+            "role",
+            "is_trainer",
+            "is_student",
+        )
+        read_only_fields = ("id", "role", "is_trainer", "is_student")
+        extra_kwargs = {
+            "email": {"required": False, "allow_blank": True},
+            "display_name": {"required": False, "allow_blank": True},
+        }
+
+    def create(self, validated_data: dict) -> User:
+        password = validated_data.pop("password", None)
+        if not password:
+            raise serializers.ValidationError({"password": "Obrigatório no cadastro."})
+        validated_data["role"] = User.Role.STUDENT  # garante via backend
+        user = User(**validated_data)
+        user.set_password(password)
+        user.save()
+        return user
+
+    def update(self, instance: User, validated_data: dict) -> User:
+        password = validated_data.pop("password", None)
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
+
+
 class LoginSerializer(TokenObtainPairSerializer):
     """
     Custom JWT login: além do access/refresh, devolve os dados do user.
