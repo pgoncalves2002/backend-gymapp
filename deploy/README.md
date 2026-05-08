@@ -136,13 +136,70 @@ Pronto. Acesse `https://api.seudominio.com.br/admin/`.
 
 ---
 
-## 6) Atualizações futuras (deploy contínuo)
+## 6) (Opcional) Frontend Coach — SPA do personal trainer
+
+O `frontend-coach/` é um SPA React/Vite separado do backend, hospedado em `https://coach.seudominio.com.br`. O nginx desta VPS serve o build estático e o backend libera CORS pro domínio.
+
+### 6.1) DNS
+
+Aponte um `A` (ou `CNAME`) de `coach.seudominio.com.br` pro mesmo IP da VPS. Espere o DNS propagar:
+
+```bash
+dig +short coach.seudominio.com.br   # deve retornar o IP da VPS
+```
+
+### 6.2) Variáveis no `.env.prod` (na VPS)
+
+Confirme/adicione:
+
+```
+COACH_DOMAIN=coach.seudominio.com.br
+DJANGO_CORS_ALLOWED_ORIGINS=https://coach.seudominio.com.br
+```
+
+E reaplique o compose pra o nginx pegar o novo template:
+
+```bash
+$COMPOSE up -d
+```
+
+### 6.3) Emite o cert TLS pro subdomínio
+
+```bash
+bash deploy/scripts/init-coach.sh
+```
+
+Idempotente; idêntico ao `init-letsencrypt.sh` mas pra `COACH_DOMAIN`.
+
+### 6.4) Build + publish (do Mac local, não da VPS)
+
+A VPS fica enxuta sem Node — o build é feito no Mac e o `dist/` é rsyncado pro volume `coach_dist` do nginx:
+
+```bash
+# No Mac, com Node 20+ instalado e ssh-alias da VPS configurado:
+cd backend-gymapp
+bash deploy/scripts/deploy-coach.sh gym-deploy
+```
+
+O script:
+1. `npm install` no `frontend-coach/` (se necessário)
+2. `npm run build` (Vite usa `.env.production` automaticamente — aponta pra `https://api.seudominio.com.br`)
+3. `rsync` do `dist/` pra `/tmp/coach-dist/` na VPS
+4. Copia pro volume `coach_dist` via container alpine (volume é read-only no nginx)
+
+Pronto. Acesse `https://coach.seudominio.com.br`.
+
+---
+
+## 7) Atualizações futuras (deploy contínuo)
+
+### Backend
 
 A cada push no `main`:
 
 ```bash
 ssh deploy@<ip-da-vps>
-cd ~/gym
+cd ~/backend-gymapp
 bash deploy/scripts/deploy.sh
 ```
 
@@ -153,12 +210,31 @@ O `deploy.sh` faz:
 - `migrate` + `collectstatic`
 - Reload do nginx
 
+### Frontend coach
+
+A cada mudança no `frontend-coach/` (no Mac):
+
+```bash
+cd backend-gymapp
+bash deploy/scripts/deploy-coach.sh gym-deploy
+```
+
+(Não toca no backend — só atualiza os arquivos estáticos servidos pelo nginx.)
+
 ---
 
 ## Troubleshooting
 
-**`init-letsencrypt.sh` falha em "Failed authorization procedure"**
-DNS ainda não propagou. Confirme com `dig +short api.seudominio.com.br` e espere até o IP retornar correto antes de rodar de novo.
+**`init-letsencrypt.sh` (ou `init-coach.sh`) falha em "Failed authorization procedure"**
+DNS ainda não propagou. Confirme com `dig +short <dominio>` e espere até o IP retornar correto antes de rodar de novo.
+
+**Coach SPA mostra "Erro de conexão" no login**
+CORS do backend não inclui o domínio do coach, ou o `COACH_DOMAIN` no `.env.prod` da VPS está desalinhado do que está em `frontend-coach/.env.production`. Confirme:
+```bash
+# Na VPS:
+grep -E "DJANGO_CORS_ALLOWED_ORIGINS|COACH_DOMAIN" .env.prod
+$COMPOSE restart web nginx
+```
 
 **`nginx: [emerg] cannot load certificate`**
 Os certs dummy não foram criados — apague tudo e refaça:

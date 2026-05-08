@@ -36,10 +36,15 @@ services:
     # substituindo ${VARIAVEIS} pelas vars do environment, e escreve em /etc/nginx/conf.d.
     environment:
       DJANGO_DOMAIN: ${DJANGO_DOMAIN}
+      # Subdomínio do SPA do personal trainer (frontend-coach).
+      # Default = "coach.${DJANGO_DOMAIN}" se não setar no .env.prod.
+      COACH_DOMAIN: ${COACH_DOMAIN:-coach.${DJANGO_DOMAIN}}
     volumes:
       - ./deploy/nginx/templates:/etc/nginx/templates:ro
       - static_files:/srv/static:ro
       - media_files:/srv/media:ro
+      # Build estático do frontend-coach (populado pelo deploy-coach.sh).
+      - coach_dist:/srv/coach:ro
       - certbot_www:/var/www/certbot:ro
       - certbot_certs:/etc/letsencrypt:ro
     # SEM command custom: deixa o entrypoint padrão da imagem nginx rodar e
@@ -64,5 +69,6 @@ volumes:
   pgdata:
   static_files:
   media_files:
+  coach_dist:
   certbot_www:
   certbot_certs:

@@ -1,0 +1,64 @@
+# Configuração de produção pro SPA do personal trainer
+# (frontend-coach — React/Vite, build estático).
+# Renderizado pelo nginx oficial substituindo ${COACH_DOMAIN}.
+#
+# Pré-requisito: certificados em /etc/letsencrypt/live/${COACH_DOMAIN}/
+# (gerados pelo init-coach.sh — sibling do init-letsencrypt.sh).
+
+# ---------------------------------------------------------------------------
+# HTTP (porta 80): só serve o /.well-known pra renovação de cert e
+# redireciona o resto pra HTTPS.
+# ---------------------------------------------------------------------------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${COACH_DOMAIN};
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ---------------------------------------------------------------------------
+# HTTPS (porta 443): serve o build estático do frontend-coach.
+# Single-page app: rotas client-side caem todas no /index.html.
+# ---------------------------------------------------------------------------
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${COACH_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${COACH_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${COACH_DOMAIN}/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Headers de segurança.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "same-origin" always;
+
+    root /srv/coach;
+    index index.html;
+
+    # Assets do Vite vêm com hash no nome — pode cachear pra sempre.
+    location /assets/ {
+        access_log off;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # SPA fallback — qualquer rota client-side cai no index.html.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
