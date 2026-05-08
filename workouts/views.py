@@ -9,7 +9,9 @@ Regras de visibilidade:
 
 from django.db.models import Count, Prefetch, Q
 from rest_framework import permissions, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.response import Response
 
 from accounts.permissions import IsTrainer, IsWorkoutOwnerOrTrainer
 
@@ -42,9 +44,46 @@ class ExerciseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Exercise.objects.select_related("created_by")
-        if user.is_staff or user.is_superuser:
-            return qs
-        return qs.filter(Q(is_public=True) | Q(created_by=user)).distinct()
+        if not (user.is_staff or user.is_superuser):
+            qs = qs.filter(Q(is_public=True) | Q(created_by=user)).distinct()
+
+        # Filtro opcional por grupo muscular — usado pelo SPA do personal pra
+        # alimentar o picker em cascata (Step 2 do editor de ficha).
+        muscle_group = self.request.query_params.get("muscle_group")
+        if muscle_group:
+            qs = qs.filter(muscle_group__iexact=muscle_group.strip())
+
+        return qs.order_by("muscle_group", "name")
+
+    @action(detail=False, methods=["get"], url_path="muscle-groups")
+    def muscle_groups(self, request):
+        """
+        GET /api/exercises/muscle-groups/
+
+        Retorna a lista de grupos musculares distintos visíveis pro user
+        logado, com contagem de exercícios em cada um. Usado pelo SPA do
+        personal pra montar o Step 1 do picker (chips de grupos).
+
+        Resposta:
+            [{"name": "Peito", "count": 12}, {"name": "Costas", "count": 8}, ...]
+        """
+        # Não usamos `self.get_queryset()` direto porque ele aplica o filtro
+        # `muscle_group=` (se viesse na query string), o que aqui não tem sentido —
+        # queremos a lista completa visível pro user. Reaplica só o scoping.
+        user = request.user
+        base = Exercise.objects.all()
+        if not (user.is_staff or user.is_superuser):
+            base = base.filter(Q(is_public=True) | Q(created_by=user)).distinct()
+        groups = (
+            base.values("muscle_group")
+            .annotate(count=Count("id"))
+            .order_by("muscle_group")
+        )
+        return Response([
+            {"name": g["muscle_group"], "count": g["count"]}
+            for g in groups
+            if g["muscle_group"]
+        ])
 
     def perform_create(self, serializer):
         user = self.request.user
