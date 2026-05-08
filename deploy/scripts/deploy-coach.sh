@@ -82,5 +82,12 @@ docker run --rm \
 rm -rf /tmp/coach-dist
 REMOTE_EOF
 
+# Lê o COACH_DOMAIN diretamente do .env.prod da VPS pra mostrar a URL final.
+COACH_URL=$(ssh "$SSH_ALIAS" "grep '^COACH_DOMAIN=' ~/backend-gymapp/.env.prod 2>/dev/null | cut -d= -f2-" || true)
+
 echo ""
-echo "✓ Build publicado. Acesse https://\$COACH_DOMAIN pra confirmar."
+if [[ -n "$COACH_URL" ]]; then
+    echo "✓ Build publicado. Acesse https://$COACH_URL pra confirmar."
+else
+    echo "✓ Build publicado."
+fi
