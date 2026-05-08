@@ -69,6 +69,11 @@ class StudentSerializer(serializers.ModelSerializer):
 
     `password` é write-only e obrigatório no create; opcional no update
     (senha só muda se vier).
+
+    `is_active`: writable pra permitir bloqueio/desbloqueio. User com
+    is_active=False não consegue logar (Django bloqueia auth).
+
+    `date_joined` e `updated_at`: read-only, usados pra ordenação no SPA.
     """
 
     password = serializers.CharField(
@@ -91,10 +96,16 @@ class StudentSerializer(serializers.ModelSerializer):
             "display_name",
             "birth_date",
             "role",
+            "is_active",
             "is_trainer",
             "is_student",
+            "date_joined",
+            "updated_at",
         )
-        read_only_fields = ("id", "role", "is_trainer", "is_student")
+        read_only_fields = (
+            "id", "role", "is_trainer", "is_student",
+            "date_joined", "updated_at",
+        )
         extra_kwargs = {
             "email": {"required": False, "allow_blank": True},
             "display_name": {"required": False, "allow_blank": True},

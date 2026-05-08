@@ -6,7 +6,7 @@ Os endpoints `login/` e `refresh/` reaproveitam as views do simplejwt
 usado pelo SPA do personal.
 """
 
-from rest_framework import generics, permissions, viewsets
+from rest_framework import filters, generics, permissions, viewsets
 from rest_framework.exceptions import PermissionDenied
 from rest_framework_simplejwt.views import TokenObtainPairView
 
@@ -68,9 +68,15 @@ class StudentsViewSet(viewsets.ModelViewSet):
     serializer_class = StudentSerializer
     permission_classes = (permissions.IsAuthenticated, IsTrainer)
 
+    # DRF OrderingFilter expõe ?ordering=<campo>. Os campos abaixo são
+    # whitelist — qualquer outro retorna 400. Default mantém alfabético.
+    filter_backends = (filters.OrderingFilter,)
+    ordering_fields = ("display_name", "username", "date_joined", "updated_at")
+    ordering = ("display_name", "username")
+
     def get_queryset(self):
         user = self.request.user
-        qs = User.objects.filter(role=User.Role.STUDENT).order_by("display_name", "username")
+        qs = User.objects.filter(role=User.Role.STUDENT)
         if user.is_staff or user.is_superuser or user.has_full_access:
             return qs
         return qs.filter(created_by=user)
