@@ -38,6 +38,15 @@ class User(AbstractUser):
         verbose_name="Cadastrado por",
     )
 
+    # Quando este registro foi modificado pela última vez. Usado pelo SPA
+    # do personal pra ordenar a lista de alunos por "última edição".
+    # `null=True` pra não quebrar registros anteriores à migration.
+    updated_at = models.DateTimeField(
+        "Atualizado em",
+        auto_now=True,
+        null=True, blank=True,
+    )
+
     class Meta:
         ordering = ["username"]
         verbose_name = "Usuário"
