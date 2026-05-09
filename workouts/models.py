@@ -193,6 +193,16 @@ class WorkoutExercise(models.Model):
         "Carga sugerida (kg)",
         max_digits=5, decimal_places=2,
         null=True, blank=True,
+        help_text="Carga uniforme pra todas as séries. Sobrescrita por set_loads se definida.",
+    )
+    # Carga por série (pirâmide, drop set, etc). Lista JSON com mesmo
+    # tamanho de `sets`. Cada elemento é um número ou null (= usa load_kg).
+    # Lista vazia = usa load_kg em todas as séries (comportamento legado).
+    set_loads = models.JSONField(
+        "Carga por série",
+        default=list,
+        blank=True,
+        help_text='Ex.: [60, 60, 70, 75] (pirâmide). [] = usa load_kg geral.',
     )
     rest_seconds = models.PositiveSmallIntegerField("Descanso (s)", default=60)
 
@@ -268,7 +278,14 @@ class SetPreset(models.Model):
         "Carga (kg)",
         max_digits=6, decimal_places=2,
         null=True, blank=True,
-        help_text="Carga sugerida. Vazio quando o preset não fixa carga.",
+        help_text="Carga uniforme. Sobrescrita por set_loads se definida.",
+    )
+    # Carga por série, mesma semântica de WorkoutExercise.set_loads.
+    set_loads = models.JSONField(
+        "Carga por série",
+        default=list,
+        blank=True,
+        help_text='Ex.: [60, 60, 70, 75]. [] = usa load_kg geral.',
     )
     rest_seconds = models.PositiveIntegerField(
         "Descanso (s)",
