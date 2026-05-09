@@ -10,14 +10,15 @@ Regras de visibilidade:
 from django.db.models import Count, Prefetch, Q
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from accounts.permissions import IsTrainer, IsWorkoutOwnerOrTrainer
 
-from .models import Exercise, Workout, WorkoutExercise
+from .models import Exercise, SetPreset, Workout, WorkoutExercise
 from .serializers import (
     ExerciseSerializer,
+    SetPresetSerializer,
     WorkoutDetailSerializer,
     WorkoutExerciseSerializer,
     WorkoutListSerializer,
@@ -207,3 +208,56 @@ class WorkoutViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(trainer=self.request.user)
+
+
+# ---------------------------------------------------------------------------
+# Presets de série: /api/set-presets/
+# ---------------------------------------------------------------------------
+class SetPresetViewSet(viewsets.ModelViewSet):
+    """
+    /api/set-presets/         — list/create
+    /api/set-presets/{id}/    — retrieve/update/partial_update/destroy
+
+    Privados por trainer. Trainer só vê e edita os próprios.
+    Admin/staff vê todos.
+
+    No POST, `created_by` é setado automaticamente como o trainer logado.
+    """
+
+    serializer_class = SetPresetSerializer
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = SetPreset.objects.select_related("created_by")
+        if user.is_staff or user.is_superuser or user.has_full_access:
+            return qs
+        return qs.filter(created_by=user)
+
+    def perform_create(self, serializer):
+        # Constraint UNIQUE (created_by, name) é checado no DB. Pra retornar
+        # 400 limpo (e não 500 IntegrityError), valida manual antes do save.
+        name = serializer.validated_data.get("name")
+        if SetPreset.objects.filter(created_by=self.request.user, name=name).exists():
+            raise ValidationError({"name": ["Já existe um preset com esse nome."]})
+        serializer.save(created_by=self.request.user)
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        user = self.request.user
+        if not (user.has_full_access or instance.created_by_id == user.id):
+            raise PermissionDenied("Só o criador pode editar este preset.")
+        # Mesma checagem de unicidade no update (se renomear).
+        new_name = serializer.validated_data.get("name", instance.name)
+        if (
+            new_name != instance.name
+            and SetPreset.objects.filter(created_by=instance.created_by, name=new_name).exists()
+        ):
+            raise ValidationError({"name": ["Já existe um preset com esse nome."]})
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        user = self.request.user
+        if not (user.has_full_access or instance.created_by_id == user.id):
+            raise PermissionDenied("Só o criador pode remover este preset.")
+        instance.delete()

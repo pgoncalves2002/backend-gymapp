@@ -208,3 +208,75 @@ class WorkoutExercise(models.Model):
     def effective_technique_note(self) -> str:
         """Dica desta instância, ou cai pro default do catálogo."""
         return self.technique_note or self.exercise.default_technique_note
+
+
+# ---------------------------------------------------------------------------
+# Preset de parâmetros de série
+# ---------------------------------------------------------------------------
+class SetPreset(models.Model):
+    """
+    Preset privado de parâmetros de série pra agilizar a montagem da ficha
+    no SPA do personal. Em vez de digitar séries/reps/carga/descanso pra cada
+    exercício, o trainer aplica um preset salvo (ex.: "Hipertrofia 4x10
+    moderado, 60s descanso") e ajusta só se precisar.
+
+    Privado: cada trainer só vê os presets que criou.
+    Não tem ligação com Exercise — é puramente parâmetros (reaproveitável
+    em qualquer exercício).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="set_presets",
+        verbose_name="Criado por",
+    )
+
+    name = models.CharField(
+        "Nome",
+        max_length=80,
+        help_text="Ex.: Hipertrofia 4x10 moderado",
+    )
+
+    sets = models.PositiveSmallIntegerField(
+        "Séries",
+        validators=[MinValueValidator(1)],
+    )
+    reps = models.CharField(
+        "Repetições",
+        max_length=30,
+        help_text="String livre: '10-12', '8', 'Falha', '15s'.",
+    )
+    load_kg = models.DecimalField(
+        "Carga (kg)",
+        max_digits=6, decimal_places=2,
+        null=True, blank=True,
+        help_text="Carga sugerida. Vazio quando o preset não fixa carga.",
+    )
+    rest_seconds = models.PositiveIntegerField(
+        "Descanso (s)",
+        default=60,
+    )
+
+    created_at = models.DateTimeField("Criado em", auto_now_add=True)
+    updated_at = models.DateTimeField("Atualizado em", auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        constraints = [
+            # Mesmo nome de preset não pode repetir pra um único trainer.
+            models.UniqueConstraint(
+                fields=["created_by", "name"],
+                name="setpreset_unique_name_per_creator",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["created_by"]),
+        ]
+        verbose_name = "Preset de série"
+        verbose_name_plural = "Presets de série"
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.sets}x{self.reps})"
