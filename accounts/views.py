@@ -126,7 +126,12 @@ class StudentsViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = User.objects.filter(role=User.Role.STUDENT)
-        if user.is_staff or user.is_superuser or user.has_full_access:
+        # SEGURANÇA (multi-tenant): trainer com `is_staff=True` (pra acessar
+        # /admin/ do Django) NÃO pode ver alunos de outros trainers. Só
+        # `has_full_access` (= role=admin OU is_superuser) tem visão global.
+        # is_staff sozinho é só permissão de UI do admin, não autorização de
+        # bypass do scoping por trainer.
+        if user.has_full_access:
             return qs
         return qs.filter(created_by=user)
 
