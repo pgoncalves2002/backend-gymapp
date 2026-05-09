@@ -58,6 +58,9 @@ INSTALLED_APPS = [
     # 3rd party
     "rest_framework",
     "rest_framework_simplejwt",
+    # Blacklist token (usado pelo ActiveUserTokenRefreshView pra invalidar
+    # refresh tokens de alunos bloqueados imediatamente).
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     # local
     "accounts",

@@ -8,7 +8,9 @@ usado pelo SPA do personal.
 
 from rest_framework import filters, generics, permissions, viewsets
 from rest_framework.exceptions import PermissionDenied
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.exceptions import InvalidToken
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .models import User
 from .permissions import IsTrainer
@@ -21,9 +23,56 @@ from .serializers import (
 
 
 class LoginView(TokenObtainPairView):
-    """POST /api/auth/login/ — devolve access/refresh + dados do user."""
+    """POST /api/auth/login/ — devolve access/refresh + dados do user.
+
+    Django ModelBackend já bloqueia login se `user.is_active=False` (mesma
+    flag usada pelo admin pelo checkbox "Ativo"). Resposta nesse caso é 401.
+    """
 
     serializer_class = LoginSerializer
+
+
+class ActiveUserTokenRefreshView(TokenRefreshView):
+    """POST /api/auth/refresh/ — troca refresh por novo access.
+
+    Override do TokenRefreshView padrão pra rejeitar usuários inativos.
+    Sem isso, um aluno bloqueado (`is_active=False`) podia continuar usando
+    seu refresh token até a expiração (14 dias) — `simplejwt` valida só
+    a assinatura do JWT, não consulta o user no DB.
+
+    Comportamento:
+        - Refresh válido + user ativo → 200 com novo access (e refresh
+          rotacionado se ROTATE_REFRESH_TOKENS=True).
+        - Refresh válido + user inativo (bloqueado) → 401 com mensagem
+          clara, e tenta blacklistar o refresh pra cortar imediato.
+        - Refresh inválido/expirado → 401 (comportamento padrão).
+    """
+
+    def post(self, request, *args, **kwargs):
+        refresh_str = request.data.get("refresh")
+        if refresh_str:
+            try:
+                token = RefreshToken(refresh_str)
+                user_id = token.payload.get("user_id")
+                if user_id:
+                    user = User.objects.filter(pk=user_id).only("id", "is_active").first()
+                    if user is not None and not user.is_active:
+                        # Tenta blacklistar pra invalidar imediato — só roda
+                        # se o app de blacklist estiver instalado; caso contrário,
+                        # rejeita do mesmo jeito mas o token ainda fica "vivo"
+                        # até expirar pelo iat/exp.
+                        try:
+                            token.blacklist()
+                        except (AttributeError, Exception):
+                            pass
+                        raise InvalidToken("Conta bloqueada. Fale com seu personal trainer.")
+            except InvalidToken:
+                raise
+            except Exception:
+                # Token malformado/expirado: deixa o super lidar (vai 401)
+                pass
+
+        return super().post(request, *args, **kwargs)
 
 
 class RegisterView(generics.CreateAPIView):
