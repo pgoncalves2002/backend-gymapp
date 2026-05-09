@@ -123,6 +123,16 @@ class Workout(models.Model):
     day_label = models.CharField("Dia da semana", max_length=40)
     notes = models.TextField("Observações do personal", blank=True)
 
+    # Soft-delete: ficha arquivada some pro aluno (e do /api/sync/) mas
+    # continua visível pro trainer no SPA quando ele toggla "Ver arquivadas".
+    # Diferente do `delete()` que apaga as fichas e cascata sessions.
+    is_archived = models.BooleanField(
+        "Arquivada",
+        default=False,
+        db_index=True,
+        help_text="Quando True, escondida do aluno e do sync mobile.",
+    )
+
     created_at = models.DateTimeField("Criada em", auto_now_add=True)
     updated_at = models.DateTimeField("Atualizada em", auto_now=True)
 
@@ -258,6 +268,11 @@ class SetPreset(models.Model):
     rest_seconds = models.PositiveIntegerField(
         "Descanso (s)",
         default=60,
+    )
+    technique_note = models.TextField(
+        "Dica técnica",
+        blank=True,
+        help_text="Opcional. Aplicada quando o preset for usado num exercício.",
     )
 
     created_at = models.DateTimeField("Criado em", auto_now_add=True)

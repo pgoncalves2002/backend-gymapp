@@ -74,7 +74,9 @@ class SyncView(APIView):
         if user.is_trainer:
             qs = qs.filter(trainer=user)
         else:
-            qs = qs.filter(student=user)
+            # Aluno NUNCA recebe fichas arquivadas no sync — elas só ficam
+            # visíveis pro trainer no SPA quando ele toggla "Ver arquivadas".
+            qs = qs.filter(student=user, is_archived=False)
 
         workouts_data = WorkoutDetailSerializer(
             qs, many=True, context={"request": request}

@@ -87,6 +87,7 @@ class _WorkoutBaseSerializer(serializers.ModelSerializer):
             "focus",
             "day_label",
             "notes",
+            "is_archived",
             "exercises_count",
             "estimated_duration_minutes",
             "created_at",
@@ -141,6 +142,7 @@ class SetPresetSerializer(serializers.ModelSerializer):
             "reps",
             "load_kg",
             "rest_seconds",
+            "technique_note",
             "created_at",
             "updated_at",
         )

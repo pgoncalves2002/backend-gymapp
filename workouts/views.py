@@ -193,8 +193,24 @@ class WorkoutViewSet(viewsets.ModelViewSet):
             .annotate(_exercises_count=Count("workout_exercises"))
         )
         if user.is_trainer:
-            return qs.filter(trainer=user)
-        return qs.filter(student=user)
+            qs = qs.filter(trainer=user)
+        else:
+            # Aluno NUNCA vê fichas arquivadas (em nenhuma ação — list,
+            # retrieve, etc.). Pra ele, a ficha arquivada simplesmente
+            # não existe.
+            return qs.filter(student=user, is_archived=False)
+
+        # Trainer: filtro `?archived=` aplica APENAS no list. Retrieve/update/
+        # destroy precisam ver fichas arquivadas pra desarquivar/apagar.
+        if self.action == "list":
+            archived_param = self.request.query_params.get("archived", "false").lower()
+            if archived_param == "true":
+                qs = qs.filter(is_archived=True)
+            elif archived_param == "all":
+                pass
+            else:
+                qs = qs.filter(is_archived=False)
+        return qs
 
     def get_serializer_class(self):
         if self.action == "list":
