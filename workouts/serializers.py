@@ -13,7 +13,7 @@ from rest_framework import serializers
 
 from accounts.models import User
 
-from .models import Exercise, Workout, WorkoutExercise
+from .models import Exercise, SetPreset, Workout, WorkoutExercise
 
 
 # ---------------------------------------------------------------------------
@@ -123,3 +123,25 @@ class WorkoutDetailSerializer(_WorkoutBaseSerializer):
 
     class Meta(_WorkoutBaseSerializer.Meta):
         fields = _WorkoutBaseSerializer.Meta.fields + ("workout_exercises",)
+
+
+# ---------------------------------------------------------------------------
+# Preset de parâmetros de série
+# ---------------------------------------------------------------------------
+class SetPresetSerializer(serializers.ModelSerializer):
+    created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = SetPreset
+        fields = (
+            "id",
+            "created_by",
+            "name",
+            "sets",
+            "reps",
+            "load_kg",
+            "rest_seconds",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("id", "created_by", "created_at", "updated_at")
