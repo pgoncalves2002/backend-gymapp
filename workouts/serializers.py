@@ -60,10 +60,34 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
             "sets",
             "reps",
             "load_kg",
+            "set_loads",
             "rest_seconds",
             "technique_note",
         )
         read_only_fields = ("id", "exercise_detail")
+
+    def validate(self, attrs):
+        # set_loads, se definida, precisa ter mesmo length de sets.
+        # Cada elemento deve ser número não-negativo ou null.
+        sets = attrs.get("sets", getattr(self.instance, "sets", None))
+        loads = attrs.get("set_loads", None)
+        if loads is None and self.instance is not None:
+            loads = self.instance.set_loads
+        if loads:
+            if not isinstance(loads, list):
+                raise serializers.ValidationError({"set_loads": "Deve ser uma lista."})
+            if sets is not None and len(loads) != sets:
+                raise serializers.ValidationError({
+                    "set_loads": f"Lista deve ter {sets} elementos (sets), não {len(loads)}.",
+                })
+            for i, v in enumerate(loads):
+                if v is None:
+                    continue
+                if not isinstance(v, (int, float)) or v < 0:
+                    raise serializers.ValidationError({
+                        "set_loads": f"Posição {i}: precisa ser número não-negativo ou null.",
+                    })
+        return attrs
 
 
 # ---------------------------------------------------------------------------
@@ -141,9 +165,31 @@ class SetPresetSerializer(serializers.ModelSerializer):
             "sets",
             "reps",
             "load_kg",
+            "set_loads",
             "rest_seconds",
             "technique_note",
             "created_at",
             "updated_at",
         )
         read_only_fields = ("id", "created_by", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        sets = attrs.get("sets", getattr(self.instance, "sets", None))
+        loads = attrs.get("set_loads", None)
+        if loads is None and self.instance is not None:
+            loads = self.instance.set_loads
+        if loads:
+            if not isinstance(loads, list):
+                raise serializers.ValidationError({"set_loads": "Deve ser uma lista."})
+            if sets is not None and len(loads) != sets:
+                raise serializers.ValidationError({
+                    "set_loads": f"Lista deve ter {sets} elementos (sets), não {len(loads)}.",
+                })
+            for i, v in enumerate(loads):
+                if v is None:
+                    continue
+                if not isinstance(v, (int, float)) or v < 0:
+                    raise serializers.ValidationError({
+                        "set_loads": f"Posição {i}: precisa ser número não-negativo ou null.",
+                    })
+        return attrs
