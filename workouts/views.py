@@ -45,7 +45,10 @@ class ExerciseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = Exercise.objects.select_related("created_by")
-        if not (user.is_staff or user.is_superuser):
+        # SEGURANÇA: trainer com `is_staff=True` NÃO deve ver exercícios
+        # privados de outros trainers. Só has_full_access (role=admin ou
+        # superuser) tem visão global.
+        if not user.has_full_access:
             qs = qs.filter(Q(is_public=True) | Q(created_by=user)).distinct()
 
         # Filtro opcional por grupo muscular — usado pelo SPA do personal pra
@@ -73,7 +76,7 @@ class ExerciseViewSet(viewsets.ModelViewSet):
         # queremos a lista completa visível pro user. Reaplica só o scoping.
         user = request.user
         base = Exercise.objects.all()
-        if not (user.is_staff or user.is_superuser):
+        if not user.has_full_access:
             base = base.filter(Q(is_public=True) | Q(created_by=user)).distinct()
         groups = (
             base.values("muscle_group")
@@ -246,7 +249,9 @@ class SetPresetViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         qs = SetPreset.objects.select_related("created_by")
-        if user.is_staff or user.is_superuser or user.has_full_access:
+        # SEGURANÇA: trainer com is_staff=True NÃO vê presets de outros
+        # trainers. Só has_full_access (admin/superuser) tem visão global.
+        if user.has_full_access:
             return qs
         return qs.filter(created_by=user)
 

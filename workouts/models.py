@@ -83,10 +83,15 @@ class Exercise(models.Model):
         return f"{prefix} {self.name}"
 
     def is_visible_to(self, user) -> bool:
-        """Determina se um user pode usar este exercício em fichas."""
+        """Determina se um user pode usar este exercício em fichas.
+
+        SEGURANÇA: trainer com is_staff=True (acesso ao /admin/ do Django)
+        NÃO deve poder usar exercícios privados de outros trainers só por
+        isso. Só has_full_access (role=admin ou superuser) bypassa o scoping.
+        """
         if not user or not user.is_authenticated:
             return False
-        if user.is_staff or user.is_superuser:
+        if getattr(user, "has_full_access", False):
             return True
         if self.is_public:
             return True
