@@ -57,6 +57,7 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
             "exercise",         # PK na escrita
             "exercise_detail",  # objeto na leitura
             "order",
+            "group_id",         # superset/bi-set (mesmo UUID = conjugado)
             "sets",
             "reps",
             "load_kg",
