@@ -182,6 +182,17 @@ class WorkoutExercise(models.Model):
 
     order = models.PositiveSmallIntegerField("Ordem", default=0)
 
+    # Exercícios conjugados (superset / bi-set):
+    # Itens que compartilham o mesmo `group_id` formam um superset — devem ser
+    # feitos em sequência sem descanso entre eles. NULL = exercício solo
+    # (comportamento padrão). Convenção: itens do mesmo grupo são salvos com
+    # `order` consecutivos pra o aluno saber a ordem dentro do superset.
+    group_id = models.UUIDField(
+        "ID do grupo conjugado",
+        null=True, blank=True, db_index=True,
+        help_text="Mesmo UUID em N itens = superset. NULL = solo.",
+    )
+
     sets = models.PositiveSmallIntegerField(
         "Séries", validators=[MinValueValidator(1)]
     )
