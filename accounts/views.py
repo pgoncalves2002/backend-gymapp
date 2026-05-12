@@ -6,8 +6,10 @@ Os endpoints `login/` e `refresh/` reaproveitam as views do simplejwt
 usado pelo SPA do personal.
 """
 
-from rest_framework import filters, generics, permissions, viewsets
+from rest_framework import filters, generics, permissions, status, viewsets
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -15,6 +17,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .models import User
 from .permissions import IsTrainer
 from .serializers import (
+    ChangePasswordSerializer,
     LoginSerializer,
     RegisterSerializer,
     StudentSerializer,
@@ -95,6 +98,31 @@ class MeView(generics.RetrieveUpdateAPIView):
 
     def get_object(self) -> User:
         return self.request.user
+
+
+class ChangePasswordView(APIView):
+    """
+    POST /api/auth/change-password/ — troca a senha do próprio usuário.
+
+    Body: { "current_password": "...", "new_password": "..." }
+
+    Self-service tanto pro trainer (SPA) quanto pro aluno (mobile). Não
+    invalidamos os JWTs existentes — a senha não está embutida no token,
+    então o access/refresh seguem válidos. UX: o usuário continua logado.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(
+            data=request.data, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(
+            {"detail": "Senha alterada com sucesso."},
+            status=status.HTTP_200_OK,
+        )
 
 
 # ---------------------------------------------------------------------------
