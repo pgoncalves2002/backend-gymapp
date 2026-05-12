@@ -131,6 +131,44 @@ class StudentSerializer(serializers.ModelSerializer):
         return instance
 
 
+class ChangePasswordSerializer(serializers.Serializer):
+    """
+    Troca de senha do próprio usuário logado.
+
+    Exige a senha atual pra evitar takeover via session hijacking (alguém com
+    o access token ainda precisa saber a senha atual).
+    """
+
+    current_password = serializers.CharField(write_only=True, required=True)
+    new_password = serializers.CharField(write_only=True, required=True)
+
+    def validate_current_password(self, value: str) -> str:
+        user = self.context["request"].user
+        if not user.check_password(value):
+            raise serializers.ValidationError("Senha atual incorreta.")
+        return value
+
+    def validate_new_password(self, value: str) -> str:
+        # Aplica os AUTH_PASSWORD_VALIDATORS do Django (min length, comum etc.).
+        # Passa o user pra detectar similaridade com username/email.
+        validate_password(value, self.context["request"].user)
+        return value
+
+    def validate(self, attrs: dict) -> dict:
+        # Bloqueia "trocar" pela mesma senha — pouco útil e confunde o user.
+        if attrs["current_password"] == attrs["new_password"]:
+            raise serializers.ValidationError(
+                {"new_password": "A nova senha precisa ser diferente da atual."}
+            )
+        return attrs
+
+    def save(self, **kwargs):
+        user = self.context["request"].user
+        user.set_password(self.validated_data["new_password"])
+        user.save(update_fields=["password"])
+        return user
+
+
 class LoginSerializer(TokenObtainPairSerializer):
     """
     Custom JWT login: além do access/refresh, devolve os dados do user.

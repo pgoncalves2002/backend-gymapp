@@ -8,6 +8,7 @@ from rest_framework.routers import DefaultRouter
 from .sync_views import SyncView
 from .views import (
     ActiveUserTokenRefreshView,
+    ChangePasswordView,
     LoginView,
     MeView,
     RegisterView,
@@ -26,5 +27,10 @@ urlpatterns = [
     path("refresh/", ActiveUserTokenRefreshView.as_view(), name="refresh"),
     path("register/", RegisterView.as_view(), name="register"),
     path("me/", MeView.as_view(), name="me"),
+    path(
+        "change-password/",
+        ChangePasswordView.as_view(),
+        name="change-password",
+    ),
     path("", include(router.urls)),
 ]
