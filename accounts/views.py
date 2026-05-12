@@ -6,7 +6,10 @@ Os endpoints `login/` e `refresh/` reaproveitam as views do simplejwt
 usado pelo SPA do personal.
 """
 
+import secrets
+
 from rest_framework import filters, generics, permissions, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -178,3 +181,67 @@ class StudentsViewSet(viewsets.ModelViewSet):
         if not (user.has_full_access or instance.created_by_id == user.id):
             raise PermissionDenied("Só o trainer que cadastrou pode remover este aluno.")
         instance.delete()
+
+    @action(detail=True, methods=["post"], url_path="reset-password")
+    def reset_password(self, request, pk=None):
+        """
+        POST /api/auth/students/{id}/reset-password/
+
+        Reseta a senha do aluno pra um valor ALEATÓRIO gerado pelo backend.
+        Retorna a senha em texto plano UMA ÚNICA VEZ — o trainer deve copiar
+        e passar pro aluno, que vai usar pra fazer login e depois trocar pelo
+        fluxo normal de change-password.
+
+        Por que aleatório (em vez do trainer escolher)?
+            - Trainer NÃO escolhe pra não ter ciência da senha pessoal do aluno
+              depois (privacidade básica + reduce blast radius se conta do
+              trainer for comprometida).
+            - O aluno é OBRIGADO a trocar logo no primeiro login (UX = entrar
+              com a temp, ir em "Alterar senha", trocar).
+
+        Permissões:
+            - Trainer que CADASTROU o aluno (created_by == request.user)
+            - OU admin/superuser
+
+        Não invalida o JWT do aluno (caso ele esteja logado em algum dispositivo).
+        Mas, na prática, se o motivo do reset é "aluno esqueceu a senha",
+        ele já não consegue logar pra renovar token — quando expirar a sessão
+        atual ele cai e precisa logar com a temp.
+        """
+        student = self.get_object()  # já aplica permission + scoping
+        user = request.user
+        if not (user.has_full_access or student.created_by_id == user.id):
+            raise PermissionDenied(
+                "Só o trainer que cadastrou pode resetar a senha deste aluno."
+            )
+
+        temp_password = self._generate_temp_password()
+        student.set_password(temp_password)
+        student.save(update_fields=["password"])
+
+        return Response(
+            {
+                "temp_password": temp_password,
+                "detail": (
+                    "Senha resetada. Passe esta senha pro aluno — ela só será "
+                    "mostrada agora. Recomende que ele troque assim que logar."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    @staticmethod
+    def _generate_temp_password(length: int = 12) -> str:
+        """
+        Gera senha aleatória com alfabeto sem caracteres ambíguos
+        (sem I, l, 1, O, 0) — facilita comunicação verbal entre trainer
+        e aluno. 12 chars no alfabeto abaixo dá ~70 bits de entropia.
+
+        Usa `secrets` (não `random`) — gerador criptograficamente seguro.
+        """
+        alphabet = (
+            "ABCDEFGHJKLMNPQRSTUVWXYZ"   # sem I, O
+            "abcdefghjkmnpqrstuvwxyz"     # sem i, l, o
+            "23456789"                    # sem 0, 1
+        )
+        return "".join(secrets.choice(alphabet) for _ in range(length))
