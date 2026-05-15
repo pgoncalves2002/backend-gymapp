@@ -166,8 +166,43 @@ class StudentsViewSet(viewsets.ModelViewSet):
             return qs
         return qs.filter(created_by=user)
 
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+    def create(self, request, *args, **kwargs):
+        """
+        POST /api/auth/students/
+
+        Cria o aluno e gera uma SENHA TEMPORÁRIA aleatória — mesma política do
+        reset-password. O trainer NÃO escolhe a senha; ela aparece UMA ÚNICA
+        VEZ no response pro trainer copiar e passar pro aluno.
+
+        Por que aleatório (e não o trainer escolher)?
+            - Trainer não tem ciência da senha pessoal do aluno depois
+              (privacidade básica + reduce blast radius).
+            - O aluno entra com a temp e troca pela própria via "Alterar senha".
+
+        Por que sobrescrever `create()` (em vez de `perform_create`)?
+            - Precisamos misturar a senha gerada (apenas-uma-vez) no response,
+              o que o fluxo default do DRF não permite. `perform_create` só
+              recebe o instance — não controla o response.
+        """
+        # Valida tudo MENOS a senha — a senha vem do backend.
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        temp_password = self._generate_temp_password()
+        student = serializer.save(
+            created_by=request.user,
+            password=temp_password,  # entra no validated_data via save(**kwargs)
+        )
+
+        # Re-serializa pra pegar todos os campos read-only (id, date_joined…)
+        # e injetar a temp_password ao lado.
+        output = self.get_serializer(student).data
+        output["temp_password"] = temp_password
+        output["detail"] = (
+            "Aluno cadastrado. Esta senha será mostrada apenas agora — "
+            "passe pro aluno e oriente a troca no primeiro login."
+        )
+        return Response(output, status=status.HTTP_201_CREATED)
 
     def perform_update(self, serializer):
         instance = serializer.instance

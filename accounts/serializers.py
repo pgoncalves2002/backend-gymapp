@@ -67,8 +67,12 @@ class StudentSerializer(serializers.ModelSerializer):
     de auto-cadastro), aqui a criação é feita pelo trainer logado e
     `created_by` é setado automaticamente no view.
 
-    `password` é write-only e obrigatório no create; opcional no update
-    (senha só muda se vier).
+    Senha:
+        - No CREATE, o trainer NÃO escolhe a senha — o view gera uma temporária
+          aleatória e a retorna no response (mesma lógica do reset-password).
+          Por isso `password` não aparece nos fields como writable.
+        - No UPDATE, password é opcional e segue write-only (caso o trainer
+          precise forçar uma senha manualmente; raro, mas mantido).
 
     `is_active`: writable pra permitir bloqueio/desbloqueio. User com
     is_active=False não consegue logar (Django bloqueia auth).
@@ -76,6 +80,8 @@ class StudentSerializer(serializers.ModelSerializer):
     `date_joined` e `updated_at`: read-only, usados pra ordenação no SPA.
     """
 
+    # Mantém password no input só pra UPDATE (PATCH). No CREATE o view
+    # ignora qualquer password que vier e gera uma aleatória.
     password = serializers.CharField(
         write_only=True,
         required=False,
@@ -112,9 +118,15 @@ class StudentSerializer(serializers.ModelSerializer):
         }
 
     def create(self, validated_data: dict) -> User:
+        # No fluxo novo, o view passa `password` (já gerada pelo backend) no
+        # validated_data antes de chamar serializer.save(). Se por algum
+        # motivo não vier, ainda quebra explícito — é um bug, não cadastro
+        # bug-prone.
         password = validated_data.pop("password", None)
         if not password:
-            raise serializers.ValidationError({"password": "Obrigatório no cadastro."})
+            raise serializers.ValidationError(
+                {"password": "Senha temporária não fornecida pelo view."}
+            )
         validated_data["role"] = User.Role.STUDENT  # garante via backend
         user = User(**validated_data)
         user.set_password(password)
