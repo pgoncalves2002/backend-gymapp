@@ -2,10 +2,8 @@
 Views do dashboard do trainer — agregações de desempenho dos alunos.
 
 Diferente do `views.py` (que serve o aluno acessando suas próprias sessões),
-este módulo é APENAS pra o trainer ver métricas agregadas dos alunos que
-ele criou. Os endpoints NÃO expõem ExerciseSetLog cru — só números
-resumidos. Isso preserva a privacidade (o trainer vê estatísticas, não
-todo dado individual) e blinda performance (agregação ORM).
+este módulo é APENAS pra o trainer ver métricas e histórico dos alunos que
+ele criou.
 
 Endpoints expostos:
 
@@ -14,6 +12,15 @@ Endpoints expostos:
 
     GET /api/trainers/me/students/{id}/metrics/?range=30d
         Métricas detalhadas de UM aluno. Aba "Desempenho" na StudentPage.
+
+    GET /api/trainers/me/students/{id}/sessions/?page=1&page_size=20&status=
+        Lista paginada do histórico de sessões do aluno (resumo por sessão).
+        Aba "Histórico" na StudentPage.
+
+    GET /api/trainers/me/sessions/{session_id}/detail/
+        Detalhe de UMA sessão: exercícios da ficha + cada série executada
+        (carga real × planejada, reps feitas × target, status). Expandido
+        ao clicar em um item da aba "Histórico".
 
 Permission: IsTrainer + scope (só alunos com `created_by=request.user`).
 Trainer com `has_full_access` (admin/superuser) vê todos.
@@ -431,6 +438,223 @@ class TrainerStudentMetricsView(APIView):
             "exercise_progression": exercise_progression,
             "top_prs": prs,
             "recent_sessions": recent_sessions,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Histórico de sessões (lista paginada).
+# ---------------------------------------------------------------------------
+class TrainerStudentSessionsView(APIView):
+    """GET /api/trainers/me/students/{student_id}/sessions/
+       ?page=1&page_size=20&status=completed|abandoned|in_progress
+
+    Lista paginada das sessões do aluno (mais recentes primeiro). Resumo
+    por sessão — sem set_logs aqui. Pra ver as séries de uma sessão use
+    /trainers/me/sessions/{id}/detail/.
+
+    Por que não usar DRF PageNumberPagination com o ViewSet existente?
+      O ViewSet de sessions usa IsSessionOwner (bloqueia trainer). Aqui
+      precisamos do scoping invertido: trainer pode ver sessions DOS
+      alunos dele. Endpoint dedicado isola essa lógica.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    DEFAULT_PAGE_SIZE = 20
+    MAX_PAGE_SIZE = 100
+
+    def get(self, request, student_id: int) -> Response:
+        student = _students_qs(request.user).filter(id=student_id).first()
+        if student is None:
+            raise NotFound("Aluno não encontrado ou não pertence a este trainer.")
+
+        # Parsing seguro de page/page_size — defaults razoáveis se vier lixo.
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get("page_size", self.DEFAULT_PAGE_SIZE))
+        except (TypeError, ValueError):
+            page_size = self.DEFAULT_PAGE_SIZE
+        page_size = max(1, min(page_size, self.MAX_PAGE_SIZE))
+
+        qs = (
+            WorkoutSession.objects
+            .filter(student=student)
+            .select_related("workout")
+            .annotate(
+                sets_total=Count("set_logs"),
+                sets_completed=Count("set_logs", filter=Q(set_logs__is_completed=True)),
+            )
+            .order_by("-started_at")
+        )
+
+        # Filtro opcional por status (?status=completed).
+        status_filter = (request.query_params.get("status") or "").lower()
+        valid_statuses = {c.value for c in WorkoutSession.Status}
+        if status_filter in valid_statuses:
+            qs = qs.filter(status=status_filter)
+
+        total = qs.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_items = list(qs[start:end])
+
+        results = [
+            {
+                "id": str(s.id),
+                "workout_id": str(s.workout_id),
+                "workout_name": s.workout.name,
+                "workout_focus": s.workout.focus,
+                "workout_day_label": s.workout.day_label,
+                "started_at": s.started_at.isoformat(),
+                "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+                "elapsed_minutes": (
+                    round(s.elapsed_seconds / 60.0, 1) if s.elapsed_seconds else 0
+                ),
+                "status": s.status,
+                "sets_total": s.sets_total,
+                "sets_completed": s.sets_completed,
+            }
+            for s in page_items
+        ]
+
+        return Response({
+            "count": total,
+            "page": page,
+            "page_size": page_size,
+            "has_next": end < total,
+            "results": results,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Detalhe de UMA sessão — exercícios + cada série logada.
+# ---------------------------------------------------------------------------
+class TrainerSessionDetailView(APIView):
+    """GET /api/trainers/me/sessions/{session_id}/detail/
+
+    Retorna a sessão "esmiuçada": pra cada WorkoutExercise da ficha
+    executada, lista as séries (set_logs) com carga real × planejada,
+    reps feitas × target, status.
+
+    Útil pro trainer revisar o que o aluno de fato fez (não só agregação).
+
+    Acesso: o aluno da sessão tem que pertencer ao trainer logado.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def get(self, request, session_id) -> Response:
+        # Scope via student.created_by — sem isso, qualquer trainer com
+        # UUID adivinhado leria sessões de outros. Filter na cadeia já cobre.
+        session = (
+            WorkoutSession.objects
+            .filter(student__in=_students_qs(request.user))
+            .select_related("workout", "student")
+            .filter(id=session_id)
+            .first()
+        )
+        if session is None:
+            raise NotFound("Sessão não encontrada ou aluno não pertence ao trainer.")
+
+        # WorkoutExercises da ficha (na ordem). Cada um pode ter 0..N set_logs
+        # nesta sessão — alguns podem nem ter sido tocados.
+        workout_exercises = (
+            WorkoutExercise.objects
+            .filter(workout=session.workout)
+            .select_related("exercise")
+            .order_by("order")
+        )
+
+        # Set logs desta sessão, indexados por workout_exercise_id pra evitar
+        # N queries (1 query só pra tudo).
+        logs_by_we: dict[Any, list[ExerciseSetLog]] = defaultdict(list)
+        for log in (
+            ExerciseSetLog.objects
+            .filter(session=session)
+            .order_by("workout_exercise__order", "set_number")
+        ):
+            logs_by_we[log.workout_exercise_id].append(log)
+
+        exercises_payload = []
+        for we in workout_exercises:
+            logs = logs_by_we.get(we.id, [])
+
+            # Carga planejada por série: usa set_loads se preenchido, senão
+            # cai pro load_kg uniforme. Espelha a lógica do mobile/coach.
+            def planned_load_for_set(set_number: int):
+                idx = set_number - 1
+                if isinstance(we.set_loads, list) and 0 <= idx < len(we.set_loads):
+                    v = we.set_loads[idx]
+                    if v is not None:
+                        return float(v)
+                return float(we.load_kg) if we.load_kg is not None else None
+
+            sets_payload = [
+                {
+                    "set_number": log.set_number,
+                    "load_kg": float(log.load_kg),
+                    "reps_done": log.reps_done,
+                    "is_completed": log.is_completed,
+                    "completed_at": (
+                        log.completed_at.isoformat() if log.completed_at else None
+                    ),
+                    "target_load_kg": planned_load_for_set(log.set_number),
+                    "target_reps": we.reps,  # string livre ("8-12", "AMRAP", etc)
+                }
+                for log in logs
+            ]
+
+            exercises_payload.append({
+                "workout_exercise_id": str(we.id),
+                "exercise_id": str(we.exercise_id),
+                "exercise_name": we.exercise.name,
+                "muscle_group": we.exercise.muscle_group,
+                "order": we.order,
+                "group_id": str(we.group_id) if we.group_id else None,
+                "sets_planned": we.sets,
+                "reps_planned": we.reps,
+                "rest_seconds": we.rest_seconds,
+                "technique_note": we.effective_technique_note,
+                "sets": sets_payload,
+            })
+
+        # Totais resumidos pra header da expansão.
+        all_logs = [l for logs in logs_by_we.values() for l in logs]
+        total_sets = len(all_logs)
+        completed_sets = sum(1 for l in all_logs if l.is_completed)
+        total_volume = sum(
+            float(l.load_kg) * l.reps_done
+            for l in all_logs if l.is_completed
+        )
+
+        return Response({
+            "session": {
+                "id": str(session.id),
+                "workout_id": str(session.workout_id),
+                "workout_name": session.workout.name,
+                "workout_focus": session.workout.focus,
+                "workout_day_label": session.workout.day_label,
+                "student_id": session.student_id,
+                "student_display_name": (
+                    session.student.display_name or session.student.username
+                ),
+                "started_at": session.started_at.isoformat(),
+                "finished_at": (
+                    session.finished_at.isoformat() if session.finished_at else None
+                ),
+                "elapsed_minutes": (
+                    round(session.elapsed_seconds / 60.0, 1)
+                    if session.elapsed_seconds else 0
+                ),
+                "status": session.status,
+                "sets_total": total_sets,
+                "sets_completed": completed_sets,
+                "total_volume_kg": round(total_volume, 2),
+            },
+            "exercises": exercises_payload,
         })
 
 
