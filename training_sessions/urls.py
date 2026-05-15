@@ -5,6 +5,7 @@ URLs do app training_sessions — montadas em /api/ pelo gym_api/urls.py.
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .dashboard_views import TrainerDashboardView, TrainerStudentMetricsView
 from .views import ExerciseSetLogViewSet, WorkoutSessionViewSet
 
 router = DefaultRouter()
@@ -15,4 +16,18 @@ app_name = "training_sessions"
 
 urlpatterns = [
     path("", include(router.urls)),
+
+    # Dashboard do trainer — agregações de desempenho.
+    # Endpoints separados do CRUD de sessions porque permission é diferente
+    # (IsTrainer aqui vs IsSessionOwner no CRUD) e a lógica é toda agregação.
+    path(
+        "trainers/me/dashboard/",
+        TrainerDashboardView.as_view(),
+        name="trainer-dashboard",
+    ),
+    path(
+        "trainers/me/students/<int:student_id>/metrics/",
+        TrainerStudentMetricsView.as_view(),
+        name="trainer-student-metrics",
+    ),
 ]
