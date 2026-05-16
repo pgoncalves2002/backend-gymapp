@@ -6,6 +6,9 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .dashboard_views import (
+    MyMetricsView,
+    MySessionDetailView,
+    MySessionsView,
     TrainerDashboardView,
     TrainerSessionDetailView,
     TrainerStudentMetricsView,
@@ -46,5 +49,24 @@ urlpatterns = [
         "trainers/me/sessions/<uuid:session_id>/detail/",
         TrainerSessionDetailView.as_view(),
         name="trainer-session-detail",
+    ),
+
+    # "Self" endpoints — aluno consultando os PRÓPRIOS dados (sem precisar
+    # passar student_id no path). Mesmo payload das views do trainer; só
+    # muda a permission (IsStudent) e o scope (request.user).
+    path(
+        "students/me/metrics/",
+        MyMetricsView.as_view(),
+        name="my-metrics",
+    ),
+    path(
+        "students/me/sessions/",
+        MySessionsView.as_view(),
+        name="my-sessions",
+    ),
+    path(
+        "students/me/sessions/<uuid:session_id>/detail/",
+        MySessionDetailView.as_view(),
+        name="my-session-detail",
     ),
 ]
