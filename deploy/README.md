@@ -277,6 +277,26 @@ bash deploy/scripts/deploy-coach.sh gym-deploy
 
 (Não toca no backend — só atualiza os arquivos estáticos servidos pelo nginx.)
 
+### Frontend aluno
+
+Mesma dinâmica do coach, mas pro SPA do aluno em `aluno.fichagym.com`.
+Antes do primeiro deploy, emita o cert:
+
+```bash
+# Na VPS (uma única vez por VPS):
+ssh gym-deploy
+cd ~/backend-gymapp
+# garante que ALUNO_DOMAIN está setado em .env.prod + DNS apontando
+bash deploy/scripts/init-aluno.sh
+```
+
+A cada mudança no `frontend-aluno/` (no Mac):
+
+```bash
+cd backend-gymapp
+bash deploy/scripts/deploy-aluno.sh gym-deploy
+```
+
 ---
 
 ## Troubleshooting
