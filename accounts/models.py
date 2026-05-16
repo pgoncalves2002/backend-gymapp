@@ -28,6 +28,33 @@ class User(AbstractUser):
     display_name = models.CharField("Nome de exibição", max_length=80, blank=True)
     birth_date = models.DateField("Data de nascimento", null=True, blank=True)
 
+    # Telefone — usado pra montar link `wa.me/<numero>` no aluno/personal.
+    # `blank=True` pra não quebrar usuários cadastrados antes desta migration;
+    # nos NOVOS cadastros o serializer força preencher.
+    # Formato livre (string) — validação só remove não-dígitos pra o link.
+    phone = models.CharField(
+        "Telefone (WhatsApp)",
+        max_length=20,
+        blank=True,
+        help_text="Usado para gerar link do WhatsApp. Ex.: +55 11 91234-5678",
+    )
+
+    # Flag de pagamento via app — dupla camada de gating:
+    #   - No TRAINER: definido pelo admin. Habilita o trainer a usar o sistema.
+    #   - No STUDENT: definido pelo trainer. Habilita ESTE aluno individualmente.
+    # Aluno só pode ter True se o trainer dele (created_by) também tem True —
+    # validação fica no serializer/view, não no model (regra de negócio que
+    # depende do `created_by`, não de constraint local).
+    uses_internal_payment = models.BooleanField(
+        "Usa pagamento interno do app?",
+        default=False,
+        db_index=True,
+        help_text=(
+            "Se ativo, este usuário usa o sistema de pagamento interno. "
+            "Pra alunos, só pode ser ativo se o trainer também estiver ativo."
+        ),
+    )
+
     # Quem cadastrou este usuário (geralmente o trainer dono dos alunos).
     # Usada pra escopar o admin: trainer só vê os alunos que ele criou.
     created_by = models.ForeignKey(
