@@ -49,7 +49,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import User
-from accounts.permissions import IsTrainer
+from accounts.permissions import IsStudent, IsTrainer
 from workouts.models import Exercise, WorkoutExercise
 
 from .models import ExerciseSetLog, WorkoutSession
@@ -225,220 +225,231 @@ class TrainerStudentMetricsView(APIView):
         if student is None:
             raise NotFound("Aluno não encontrado ou não pertence a este trainer.")
 
-        days = _range_days(request)
-        now = timezone.now()
-        window_start = now - timedelta(days=days)
+        return Response(_build_metrics_payload(student, _range_days(request)))
 
-        # 2. Sessões dentro da janela.
-        sessions_in_window = (
-            WorkoutSession.objects
-            .filter(student=student, started_at__gte=window_start)
-        )
 
-        agg = sessions_in_window.aggregate(
-            total=Count("id"),
-            completed=Count("id", filter=Q(status=WorkoutSession.Status.COMPLETED)),
-            abandoned=Count("id", filter=Q(status=WorkoutSession.Status.ABANDONED)),
-            avg_duration=Avg("elapsed_seconds", filter=Q(status=WorkoutSession.Status.COMPLETED)),
-        )
-        total = agg["total"] or 0
-        completed = agg["completed"] or 0
-        abandoned = agg["abandoned"] or 0
-        denom = completed + abandoned
-        completion_rate = (completed / denom) if denom > 0 else None
-        avg_duration_min = (
-            round((agg["avg_duration"] or 0) / 60.0, 1)
-            if agg["avg_duration"] is not None else 0.0
-        )
+def _build_metrics_payload(student: User, days: int) -> dict[str, Any]:
+    """
+    Constrói o dict de métricas pra um aluno numa janela de dias.
 
-        # 3. Volume total (Σ load_kg × reps_done) das séries concluídas no período.
-        volume_sum = (
-            ExerciseSetLog.objects
-            .filter(
-                session__student=student,
-                session__started_at__gte=window_start,
-                is_completed=True,
+    Extraído pra ser reusado em DUAS views:
+      - TrainerStudentMetricsView (trainer olhando aluno dele)
+      - MyMetricsView              (aluno olhando os próprios dados)
+
+    Lógica é a mesma; difere só na permission e em quem é o `student`.
+    """
+    now = timezone.now()
+    window_start = now - timedelta(days=days)
+
+    sessions_in_window = (
+        WorkoutSession.objects
+        .filter(student=student, started_at__gte=window_start)
+    )
+
+    agg = sessions_in_window.aggregate(
+        total=Count("id"),
+        completed=Count("id", filter=Q(status=WorkoutSession.Status.COMPLETED)),
+        abandoned=Count("id", filter=Q(status=WorkoutSession.Status.ABANDONED)),
+        avg_duration=Avg("elapsed_seconds", filter=Q(status=WorkoutSession.Status.COMPLETED)),
+    )
+    total = agg["total"] or 0
+    completed = agg["completed"] or 0
+    abandoned = agg["abandoned"] or 0
+    denom = completed + abandoned
+    completion_rate = (completed / denom) if denom > 0 else None
+    avg_duration_min = (
+        round((agg["avg_duration"] or 0) / 60.0, 1)
+        if agg["avg_duration"] is not None else 0.0
+    )
+
+    # 3. Volume total (Σ load_kg × reps_done) das séries concluídas no período.
+    volume_sum = (
+        ExerciseSetLog.objects
+        .filter(
+            session__student=student,
+            session__started_at__gte=window_start,
+            is_completed=True,
+        )
+        .aggregate(
+            total_volume=Coalesce(
+                Sum(F("load_kg") * F("reps_done"),
+                    output_field=DecimalField(max_digits=12, decimal_places=2)),
+                Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)),
             )
-            .aggregate(
-                total_volume=Coalesce(
-                    Sum(F("load_kg") * F("reps_done"),
-                        output_field=DecimalField(max_digits=12, decimal_places=2)),
-                    Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)),
-                )
-            )["total_volume"]
+        )["total_volume"]
+    )
+
+    # 4. Streaks (dias consecutivos com pelo menos 1 sessão completed).
+    #    Calculo client-side a partir dos dias com session completed
+    #    (1 query pequena).
+    completed_dates = sorted(set(
+        sessions_in_window
+        .filter(status=WorkoutSession.Status.COMPLETED)
+        .values_list("started_at__date", flat=True)
+    ))
+    current_streak, longest_streak = _streaks(completed_dates, today=now.date())
+
+    # 5. Frequência semanal: count de sessões agrupadas por semana ISO.
+    weekly_freq_raw = (
+        sessions_in_window
+        .annotate(week=TruncWeek("started_at"))
+        .values("week")
+        .annotate(count=Count("id"))
+        .order_by("week")
+    )
+    weekly_frequency = [
+        {"week_start": row["week"].date().isoformat(), "sessions": row["count"]}
+        for row in weekly_freq_raw
+    ]
+
+    # 6. Volume semanal: Σ load×reps das séries completed agrupadas por semana.
+    weekly_volume_raw = (
+        ExerciseSetLog.objects
+        .filter(
+            session__student=student,
+            session__started_at__gte=window_start,
+            is_completed=True,
         )
-
-        # 4. Streaks (dias consecutivos com pelo menos 1 sessão completed).
-        #    Calculo client-side a partir dos dias com session completed
-        #    (1 query pequena).
-        completed_dates = sorted(set(
-            sessions_in_window
-            .filter(status=WorkoutSession.Status.COMPLETED)
-            .values_list("started_at__date", flat=True)
-        ))
-        current_streak, longest_streak = _streaks(completed_dates, today=now.date())
-
-        # 5. Frequência semanal: count de sessões agrupadas por semana ISO.
-        weekly_freq_raw = (
-            sessions_in_window
-            .annotate(week=TruncWeek("started_at"))
-            .values("week")
-            .annotate(count=Count("id"))
-            .order_by("week")
+        .annotate(week=TruncWeek("session__started_at"))
+        .values("week")
+        .annotate(
+            volume=Coalesce(
+                Sum(F("load_kg") * F("reps_done"),
+                    output_field=DecimalField(max_digits=12, decimal_places=2)),
+                Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)),
+            )
         )
-        weekly_frequency = [
-            {"week_start": row["week"].date().isoformat(), "sessions": row["count"]}
-            for row in weekly_freq_raw
-        ]
+        .order_by("week")
+    )
+    weekly_volume = [
+        {"week_start": row["week"].date().isoformat(),
+         "volume_kg": float(row["volume"])}
+        for row in weekly_volume_raw
+    ]
 
-        # 6. Volume semanal: Σ load×reps das séries completed agrupadas por semana.
-        weekly_volume_raw = (
-            ExerciseSetLog.objects
-            .filter(
-                session__student=student,
-                session__started_at__gte=window_start,
-                is_completed=True,
-            )
-            .annotate(week=TruncWeek("session__started_at"))
-            .values("week")
-            .annotate(
-                volume=Coalesce(
-                    Sum(F("load_kg") * F("reps_done"),
-                        output_field=DecimalField(max_digits=12, decimal_places=2)),
-                    Value(Decimal("0"), output_field=DecimalField(max_digits=12, decimal_places=2)),
-                )
-            )
-            .order_by("week")
+    # 7. Evolução por exercício: pra cada exercise, série temporal de
+    #    max(load_kg) por semana — usada no gráfico de linha com seletor.
+    #    Limito a top 20 exercícios mais executados na janela (evita
+    #    response gigante; trainer raramente acompanha >20 exercícios).
+    top_exercise_ids = list(
+        ExerciseSetLog.objects
+        .filter(
+            session__student=student,
+            session__started_at__gte=window_start,
+            is_completed=True,
         )
-        weekly_volume = [
-            {"week_start": row["week"].date().isoformat(),
-             "volume_kg": float(row["volume"])}
-            for row in weekly_volume_raw
-        ]
+        .values("workout_exercise__exercise_id")
+        .annotate(cnt=Count("id"))
+        .order_by("-cnt")
+        .values_list("workout_exercise__exercise_id", flat=True)[:20]
+    )
 
-        # 7. Evolução por exercício: pra cada exercise, série temporal de
-        #    max(load_kg) por semana — usada no gráfico de linha com seletor.
-        #    Limito a top 20 exercícios mais executados na janela (evita
-        #    response gigante; trainer raramente acompanha >20 exercícios).
-        top_exercise_ids = list(
-            ExerciseSetLog.objects
-            .filter(
-                session__student=student,
-                session__started_at__gte=window_start,
-                is_completed=True,
-            )
-            .values("workout_exercise__exercise_id")
-            .annotate(cnt=Count("id"))
-            .order_by("-cnt")
-            .values_list("workout_exercise__exercise_id", flat=True)[:20]
+    progression_rows = (
+        ExerciseSetLog.objects
+        .filter(
+            session__student=student,
+            session__started_at__gte=window_start,
+            is_completed=True,
+            workout_exercise__exercise_id__in=top_exercise_ids,
         )
-
-        progression_rows = (
-            ExerciseSetLog.objects
-            .filter(
-                session__student=student,
-                session__started_at__gte=window_start,
-                is_completed=True,
-                workout_exercise__exercise_id__in=top_exercise_ids,
-            )
-            .annotate(week=TruncWeek("session__started_at"))
-            .values(
-                "workout_exercise__exercise_id",
-                "workout_exercise__exercise__name",
-                "workout_exercise__exercise__muscle_group",
-                "week",
-            )
-            .annotate(max_load=Max("load_kg"))
-            .order_by("workout_exercise__exercise_id", "week")
+        .annotate(week=TruncWeek("session__started_at"))
+        .values(
+            "workout_exercise__exercise_id",
+            "workout_exercise__exercise__name",
+            "workout_exercise__exercise__muscle_group",
+            "week",
         )
+        .annotate(max_load=Max("load_kg"))
+        .order_by("workout_exercise__exercise_id", "week")
+    )
 
-        progression_by_ex: dict[Any, dict[str, Any]] = {}
-        for row in progression_rows:
-            ex_id = str(row["workout_exercise__exercise_id"])
-            slot = progression_by_ex.setdefault(ex_id, {
-                "exercise_id": ex_id,
-                "exercise_name": row["workout_exercise__exercise__name"],
-                "muscle_group": row["workout_exercise__exercise__muscle_group"],
-                "history": [],
-                "max_load_kg": 0.0,
-            })
-            max_load = float(row["max_load"])
-            slot["history"].append({
-                "week_start": row["week"].date().isoformat(),
-                "max_load_kg": max_load,
-            })
-            if max_load > slot["max_load_kg"]:
-                slot["max_load_kg"] = max_load
-
-        exercise_progression = list(progression_by_ex.values())
-
-        # 8. Top PRs (max load por exercício na janela), ordenado por carga.
-        prs = sorted(
-            (
-                {
-                    "exercise_id": e["exercise_id"],
-                    "exercise_name": e["exercise_name"],
-                    "muscle_group": e["muscle_group"],
-                    "max_load_kg": e["max_load_kg"],
-                }
-                for e in exercise_progression
-            ),
-            key=lambda x: x["max_load_kg"],
-            reverse=True,
-        )[:5]
-
-        # 9. Recent sessions: últimas 10 com count de sets completed/total.
-        recent_qs = (
-            WorkoutSession.objects
-            .filter(student=student)
-            .order_by("-started_at")[:10]
-            .annotate(
-                sets_total=Count("set_logs"),
-                sets_completed=Count("set_logs", filter=Q(set_logs__is_completed=True)),
-            )
-            .select_related("workout")
-        )
-        recent_sessions = [
-            {
-                "id": str(s.id),
-                "workout_id": str(s.workout_id),
-                "workout_name": s.workout.name,
-                "workout_focus": s.workout.focus,
-                "started_at": s.started_at.isoformat(),
-                "finished_at": s.finished_at.isoformat() if s.finished_at else None,
-                "elapsed_minutes": round(s.elapsed_seconds / 60.0, 1) if s.elapsed_seconds else 0,
-                "status": s.status,
-                "sets_total": s.sets_total,
-                "sets_completed": s.sets_completed,
-            }
-            for s in recent_qs
-        ]
-
-        return Response({
-            "student": {
-                "id": student.id,
-                "username": student.username,
-                "display_name": student.display_name or student.username,
-            },
-            "range_days": days,
-            "summary": {
-                "total_sessions": total,
-                "completed_sessions": completed,
-                "abandoned_sessions": abandoned,
-                "completion_rate": (
-                    round(completion_rate, 3) if completion_rate is not None else None
-                ),
-                "avg_session_duration_minutes": avg_duration_min,
-                "total_volume_kg": float(volume_sum) if volume_sum is not None else 0.0,
-                "current_streak_days": current_streak,
-                "longest_streak_days": longest_streak,
-            },
-            "weekly_frequency": weekly_frequency,
-            "weekly_volume": weekly_volume,
-            "exercise_progression": exercise_progression,
-            "top_prs": prs,
-            "recent_sessions": recent_sessions,
+    progression_by_ex: dict[Any, dict[str, Any]] = {}
+    for row in progression_rows:
+        ex_id = str(row["workout_exercise__exercise_id"])
+        slot = progression_by_ex.setdefault(ex_id, {
+            "exercise_id": ex_id,
+            "exercise_name": row["workout_exercise__exercise__name"],
+            "muscle_group": row["workout_exercise__exercise__muscle_group"],
+            "history": [],
+            "max_load_kg": 0.0,
         })
+        max_load = float(row["max_load"])
+        slot["history"].append({
+            "week_start": row["week"].date().isoformat(),
+            "max_load_kg": max_load,
+        })
+        if max_load > slot["max_load_kg"]:
+            slot["max_load_kg"] = max_load
+
+    exercise_progression = list(progression_by_ex.values())
+
+    # 8. Top PRs (max load por exercício na janela), ordenado por carga.
+    prs = sorted(
+        (
+            {
+                "exercise_id": e["exercise_id"],
+                "exercise_name": e["exercise_name"],
+                "muscle_group": e["muscle_group"],
+                "max_load_kg": e["max_load_kg"],
+            }
+            for e in exercise_progression
+        ),
+        key=lambda x: x["max_load_kg"],
+        reverse=True,
+    )[:5]
+
+    # 9. Recent sessions: últimas 10 com count de sets completed/total.
+    recent_qs = (
+        WorkoutSession.objects
+        .filter(student=student)
+        .order_by("-started_at")[:10]
+        .annotate(
+            sets_total=Count("set_logs"),
+            sets_completed=Count("set_logs", filter=Q(set_logs__is_completed=True)),
+        )
+        .select_related("workout")
+    )
+    recent_sessions = [
+        {
+            "id": str(s.id),
+            "workout_id": str(s.workout_id),
+            "workout_name": s.workout.name,
+            "workout_focus": s.workout.focus,
+            "started_at": s.started_at.isoformat(),
+            "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+            "elapsed_minutes": round(s.elapsed_seconds / 60.0, 1) if s.elapsed_seconds else 0,
+            "status": s.status,
+            "sets_total": s.sets_total,
+            "sets_completed": s.sets_completed,
+        }
+        for s in recent_qs
+    ]
+
+    return {
+        "student": {
+            "id": student.id,
+            "username": student.username,
+            "display_name": student.display_name or student.username,
+        },
+        "range_days": days,
+        "summary": {
+            "total_sessions": total,
+            "completed_sessions": completed,
+            "abandoned_sessions": abandoned,
+            "completion_rate": (
+                round(completion_rate, 3) if completion_rate is not None else None
+            ),
+            "avg_session_duration_minutes": avg_duration_min,
+            "total_volume_kg": float(volume_sum) if volume_sum is not None else 0.0,
+            "current_streak_days": current_streak,
+            "longest_streak_days": longest_streak,
+        },
+        "weekly_frequency": weekly_frequency,
+        "weekly_volume": weekly_volume,
+        "exercise_progression": exercise_progression,
+        "top_prs": prs,
+        "recent_sessions": recent_sessions,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -467,66 +478,79 @@ class TrainerStudentSessionsView(APIView):
         student = _students_qs(request.user).filter(id=student_id).first()
         if student is None:
             raise NotFound("Aluno não encontrado ou não pertence a este trainer.")
+        return Response(_build_sessions_page_payload(student, request))
 
-        # Parsing seguro de page/page_size — defaults razoáveis se vier lixo.
-        try:
-            page = max(1, int(request.query_params.get("page", "1")))
-        except (TypeError, ValueError):
-            page = 1
-        try:
-            page_size = int(request.query_params.get("page_size", self.DEFAULT_PAGE_SIZE))
-        except (TypeError, ValueError):
-            page_size = self.DEFAULT_PAGE_SIZE
-        page_size = max(1, min(page_size, self.MAX_PAGE_SIZE))
 
-        qs = (
-            WorkoutSession.objects
-            .filter(student=student)
-            .select_related("workout")
-            .annotate(
-                sets_total=Count("set_logs"),
-                sets_completed=Count("set_logs", filter=Q(set_logs__is_completed=True)),
-            )
-            .order_by("-started_at")
+_DEFAULT_PAGE_SIZE = 20
+_MAX_PAGE_SIZE = 100
+
+
+def _build_sessions_page_payload(student: User, request) -> dict[str, Any]:
+    """
+    Constrói a página de sessões pra um aluno. Reusado por:
+      - TrainerStudentSessionsView (trainer olhando aluno dele)
+      - MySessionsView              (aluno olhando o próprio histórico)
+
+    Lê `page`, `page_size`, `status` dos query params da request.
+    """
+    # Parsing seguro — defaults razoáveis se vier lixo.
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(request.query_params.get("page_size", _DEFAULT_PAGE_SIZE))
+    except (TypeError, ValueError):
+        page_size = _DEFAULT_PAGE_SIZE
+    page_size = max(1, min(page_size, _MAX_PAGE_SIZE))
+
+    qs = (
+        WorkoutSession.objects
+        .filter(student=student)
+        .select_related("workout")
+        .annotate(
+            sets_total=Count("set_logs"),
+            sets_completed=Count("set_logs", filter=Q(set_logs__is_completed=True)),
         )
+        .order_by("-started_at")
+    )
 
-        # Filtro opcional por status (?status=completed).
-        status_filter = (request.query_params.get("status") or "").lower()
-        valid_statuses = {c.value for c in WorkoutSession.Status}
-        if status_filter in valid_statuses:
-            qs = qs.filter(status=status_filter)
+    status_filter = (request.query_params.get("status") or "").lower()
+    valid_statuses = {c.value for c in WorkoutSession.Status}
+    if status_filter in valid_statuses:
+        qs = qs.filter(status=status_filter)
 
-        total = qs.count()
-        start = (page - 1) * page_size
-        end = start + page_size
-        page_items = list(qs[start:end])
+    total = qs.count()
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = list(qs[start:end])
 
-        results = [
-            {
-                "id": str(s.id),
-                "workout_id": str(s.workout_id),
-                "workout_name": s.workout.name,
-                "workout_focus": s.workout.focus,
-                "workout_day_label": s.workout.day_label,
-                "started_at": s.started_at.isoformat(),
-                "finished_at": s.finished_at.isoformat() if s.finished_at else None,
-                "elapsed_minutes": (
-                    round(s.elapsed_seconds / 60.0, 1) if s.elapsed_seconds else 0
-                ),
-                "status": s.status,
-                "sets_total": s.sets_total,
-                "sets_completed": s.sets_completed,
-            }
-            for s in page_items
-        ]
+    results = [
+        {
+            "id": str(s.id),
+            "workout_id": str(s.workout_id),
+            "workout_name": s.workout.name,
+            "workout_focus": s.workout.focus,
+            "workout_day_label": s.workout.day_label,
+            "started_at": s.started_at.isoformat(),
+            "finished_at": s.finished_at.isoformat() if s.finished_at else None,
+            "elapsed_minutes": (
+                round(s.elapsed_seconds / 60.0, 1) if s.elapsed_seconds else 0
+            ),
+            "status": s.status,
+            "sets_total": s.sets_total,
+            "sets_completed": s.sets_completed,
+        }
+        for s in page_items
+    ]
 
-        return Response({
-            "count": total,
-            "page": page,
-            "page_size": page_size,
-            "has_next": end < total,
-            "results": results,
-        })
+    return {
+        "count": total,
+        "page": page,
+        "page_size": page_size,
+        "has_next": end < total,
+        "results": results,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -558,104 +582,168 @@ class TrainerSessionDetailView(APIView):
         )
         if session is None:
             raise NotFound("Sessão não encontrada ou aluno não pertence ao trainer.")
+        return Response(_build_session_detail_payload(session))
 
-        # WorkoutExercises da ficha (na ordem). Cada um pode ter 0..N set_logs
-        # nesta sessão — alguns podem nem ter sido tocados.
-        workout_exercises = (
-            WorkoutExercise.objects
-            .filter(workout=session.workout)
-            .select_related("exercise")
-            .order_by("order")
+
+# ===========================================================================
+# Endpoints "self" — aluno consultando os PRÓPRIOS dados.
+# Mesma lógica das views do trainer, mas:
+#   - Permission: IsStudent (em vez de IsTrainer)
+#   - student = request.user (em vez de lookup por id)
+#   - Sessão pode ser de qualquer aluno → checagem é student == request.user
+# ===========================================================================
+class MyMetricsView(APIView):
+    """GET /api/students/me/metrics/?range=30d
+
+    Versão "self" do TrainerStudentMetricsView. Aluno olha as próprias
+    métricas. Não recebe student_id — deduz do JWT.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsStudent)
+
+    def get(self, request) -> Response:
+        return Response(_build_metrics_payload(request.user, _range_days(request)))
+
+
+class MySessionsView(APIView):
+    """GET /api/students/me/sessions/?page=1&page_size=20&status=
+
+    Histórico de sessões do PRÓPRIO aluno. Mesmo payload da view do trainer.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsStudent)
+
+    def get(self, request) -> Response:
+        return Response(_build_sessions_page_payload(request.user, request))
+
+
+class MySessionDetailView(APIView):
+    """GET /api/students/me/sessions/{session_id}/detail/
+
+    Detalhe de UMA sessão do PRÓPRIO aluno. Reusa o serializer/payload da
+    TrainerSessionDetailView mas com scope `session.student == request.user`.
+
+    404 se a sessão pertence a outro aluno — protege contra um aluno
+    chutando UUIDs e lendo sessão alheia.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsStudent)
+
+    def get(self, request, session_id) -> Response:
+        session = (
+            WorkoutSession.objects
+            .filter(student=request.user, id=session_id)
+            .select_related("workout", "student")
+            .first()
         )
+        if session is None:
+            raise NotFound("Sessão não encontrada.")
 
-        # Set logs desta sessão, indexados por workout_exercise_id pra evitar
-        # N queries (1 query só pra tudo).
-        logs_by_we: dict[Any, list[ExerciseSetLog]] = defaultdict(list)
-        for log in (
-            ExerciseSetLog.objects
-            .filter(session=session)
-            .order_by("workout_exercise__order", "set_number")
-        ):
-            logs_by_we[log.workout_exercise_id].append(log)
+        # Compor o mesmo payload da TrainerSessionDetailView — em vez de
+        # duplicar, instancia ela e chama internamente. O método `get()` faz
+        # o lookup de novo (com scope diferente), mas é barato e mantém
+        # consistência se o formato mudar lá.
+        # ALTERNATIVA escolhida: replicar o mínimo necessário inline aqui
+        # pra não acoplar a duas permission classes. A construção do payload
+        # é a parte cara; o scope é a parte segura.
+        return Response(_build_session_detail_payload(session))
 
-        exercises_payload = []
-        for we in workout_exercises:
-            logs = logs_by_we.get(we.id, [])
 
-            # Carga planejada por série: usa set_loads se preenchido, senão
-            # cai pro load_kg uniforme. Espelha a lógica do mobile/coach.
-            def planned_load_for_set(set_number: int):
-                idx = set_number - 1
-                if isinstance(we.set_loads, list) and 0 <= idx < len(we.set_loads):
-                    v = we.set_loads[idx]
-                    if v is not None:
-                        return float(v)
-                return float(we.load_kg) if we.load_kg is not None else None
+def _build_session_detail_payload(session: WorkoutSession) -> dict[str, Any]:
+    """
+    Payload de detalhe de uma sessão — exercícios da ficha + séries logadas.
+    Extraído pra reuso entre TrainerSessionDetailView e MySessionDetailView.
+    """
+    workout_exercises = (
+        WorkoutExercise.objects
+        .filter(workout=session.workout)
+        .select_related("exercise")
+        .order_by("order")
+    )
 
-            sets_payload = [
-                {
-                    "set_number": log.set_number,
-                    "load_kg": float(log.load_kg),
-                    "reps_done": log.reps_done,
-                    "is_completed": log.is_completed,
-                    "completed_at": (
-                        log.completed_at.isoformat() if log.completed_at else None
-                    ),
-                    "target_load_kg": planned_load_for_set(log.set_number),
-                    "target_reps": we.reps,  # string livre ("8-12", "AMRAP", etc)
-                }
-                for log in logs
-            ]
+    logs_by_we: dict[Any, list[ExerciseSetLog]] = defaultdict(list)
+    for log in (
+        ExerciseSetLog.objects
+        .filter(session=session)
+        .order_by("workout_exercise__order", "set_number")
+    ):
+        logs_by_we[log.workout_exercise_id].append(log)
 
-            exercises_payload.append({
-                "workout_exercise_id": str(we.id),
-                "exercise_id": str(we.exercise_id),
-                "exercise_name": we.exercise.name,
-                "muscle_group": we.exercise.muscle_group,
-                "order": we.order,
-                "group_id": str(we.group_id) if we.group_id else None,
-                "sets_planned": we.sets,
-                "reps_planned": we.reps,
-                "rest_seconds": we.rest_seconds,
-                "technique_note": we.effective_technique_note,
-                "sets": sets_payload,
-            })
+    exercises_payload = []
+    for we in workout_exercises:
+        logs = logs_by_we.get(we.id, [])
 
-        # Totais resumidos pra header da expansão.
-        all_logs = [l for logs in logs_by_we.values() for l in logs]
-        total_sets = len(all_logs)
-        completed_sets = sum(1 for l in all_logs if l.is_completed)
-        total_volume = sum(
-            float(l.load_kg) * l.reps_done
-            for l in all_logs if l.is_completed
-        )
+        def planned_load_for_set(set_number: int):
+            idx = set_number - 1
+            if isinstance(we.set_loads, list) and 0 <= idx < len(we.set_loads):
+                v = we.set_loads[idx]
+                if v is not None:
+                    return float(v)
+            return float(we.load_kg) if we.load_kg is not None else None
 
-        return Response({
-            "session": {
-                "id": str(session.id),
-                "workout_id": str(session.workout_id),
-                "workout_name": session.workout.name,
-                "workout_focus": session.workout.focus,
-                "workout_day_label": session.workout.day_label,
-                "student_id": session.student_id,
-                "student_display_name": (
-                    session.student.display_name or session.student.username
+        sets_payload = [
+            {
+                "set_number": log.set_number,
+                "load_kg": float(log.load_kg),
+                "reps_done": log.reps_done,
+                "is_completed": log.is_completed,
+                "completed_at": (
+                    log.completed_at.isoformat() if log.completed_at else None
                 ),
-                "started_at": session.started_at.isoformat(),
-                "finished_at": (
-                    session.finished_at.isoformat() if session.finished_at else None
-                ),
-                "elapsed_minutes": (
-                    round(session.elapsed_seconds / 60.0, 1)
-                    if session.elapsed_seconds else 0
-                ),
-                "status": session.status,
-                "sets_total": total_sets,
-                "sets_completed": completed_sets,
-                "total_volume_kg": round(total_volume, 2),
-            },
-            "exercises": exercises_payload,
+                "target_load_kg": planned_load_for_set(log.set_number),
+                "target_reps": we.reps,
+            }
+            for log in logs
+        ]
+
+        exercises_payload.append({
+            "workout_exercise_id": str(we.id),
+            "exercise_id": str(we.exercise_id),
+            "exercise_name": we.exercise.name,
+            "muscle_group": we.exercise.muscle_group,
+            "order": we.order,
+            "group_id": str(we.group_id) if we.group_id else None,
+            "sets_planned": we.sets,
+            "reps_planned": we.reps,
+            "rest_seconds": we.rest_seconds,
+            "technique_note": we.effective_technique_note,
+            "sets": sets_payload,
         })
+
+    all_logs = [l for logs in logs_by_we.values() for l in logs]
+    total_sets = len(all_logs)
+    completed_sets = sum(1 for l in all_logs if l.is_completed)
+    total_volume = sum(
+        float(l.load_kg) * l.reps_done
+        for l in all_logs if l.is_completed
+    )
+
+    return {
+        "session": {
+            "id": str(session.id),
+            "workout_id": str(session.workout_id),
+            "workout_name": session.workout.name,
+            "workout_focus": session.workout.focus,
+            "workout_day_label": session.workout.day_label,
+            "student_id": session.student_id,
+            "student_display_name": (
+                session.student.display_name or session.student.username
+            ),
+            "started_at": session.started_at.isoformat(),
+            "finished_at": (
+                session.finished_at.isoformat() if session.finished_at else None
+            ),
+            "elapsed_minutes": (
+                round(session.elapsed_seconds / 60.0, 1)
+                if session.elapsed_seconds else 0
+            ),
+            "status": session.status,
+            "sets_total": total_sets,
+            "sets_completed": completed_sets,
+            "total_volume_kg": round(total_volume, 2),
+        },
+        "exercises": exercises_payload,
+    }
 
 
 # ---------------------------------------------------------------------------
