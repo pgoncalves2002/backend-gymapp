@@ -11,6 +11,7 @@ from .views import (
     ChangePasswordView,
     LoginView,
     MeView,
+    MyTrainerView,
     RegisterView,
     StudentsViewSet,
 )
@@ -27,6 +28,9 @@ urlpatterns = [
     path("refresh/", ActiveUserTokenRefreshView.as_view(), name="refresh"),
     path("register/", RegisterView.as_view(), name="register"),
     path("me/", MeView.as_view(), name="me"),
+    # Aba "Personal" no app iOS do aluno — leitura dos dados do trainer
+    # via `created_by`. Não requer student_id (deduz do JWT).
+    path("me/trainer/", MyTrainerView.as_view(), name="my-trainer"),
     path(
         "change-password/",
         ChangePasswordView.as_view(),

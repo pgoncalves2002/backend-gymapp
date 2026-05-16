@@ -92,7 +92,7 @@ class RegisterView(generics.CreateAPIView):
 class MeView(generics.RetrieveUpdateAPIView):
     """
     GET    /api/auth/me/ — dados do user logado.
-    PATCH  /api/auth/me/ — atualizar display_name, email, birth_date.
+    PATCH  /api/auth/me/ — atualizar display_name, email, phone, birth_date.
     Não permite mudar role nem username pelo próprio endpoint.
     """
 
@@ -101,6 +101,43 @@ class MeView(generics.RetrieveUpdateAPIView):
 
     def get_object(self) -> User:
         return self.request.user
+
+
+class MyTrainerView(generics.RetrieveAPIView):
+    """
+    GET /api/auth/me/trainer/
+
+    Retorna os dados do trainer do aluno logado (lookup via `created_by`).
+    Endpoint usado pelo app iOS na aba "Personal" pra mostrar nome, foto
+    (futuro), email, telefone e gerar link do WhatsApp.
+
+    Campos expostos: os mesmos do UserSerializer — incluindo email e
+    phone (necessário pro link wa.me). Sem dados sensíveis (senha,
+    is_superuser, etc).
+
+    Erros:
+      - 404 se o aluno foi cadastrado SEM created_by (usuários antigos
+        antes do schema multi-tenant, ou raros admin-criados).
+    """
+
+    serializer_class = UserSerializer
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get_object(self) -> User:
+        user = self.request.user
+        # Só faz sentido pra aluno. Se um trainer tentar bater nesse endpoint,
+        # 404 — é mais limpo que 403 (não é violação, só não tem o quê retornar).
+        if user.role != User.Role.STUDENT:
+            from rest_framework.exceptions import NotFound
+            raise NotFound("Apenas alunos têm trainer associado.")
+        trainer = user.created_by
+        if trainer is None or trainer.role != User.Role.TRAINER:
+            from rest_framework.exceptions import NotFound
+            raise NotFound(
+                "Este aluno não tem um trainer associado. "
+                "Peça pro admin vincular um trainer."
+            )
+        return trainer
 
 
 class ChangePasswordView(APIView):
