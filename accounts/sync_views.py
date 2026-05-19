@@ -77,6 +77,19 @@ class SyncView(APIView):
             # Aluno NUNCA recebe fichas arquivadas no sync — elas só ficam
             # visíveis pro trainer no SPA quando ele toggla "Ver arquivadas".
             qs = qs.filter(student=user, is_archived=False)
+            # Janela de validade: aluno só vê fichas dentro do período.
+            #   - valid_from null OU <= hoje (não é "futura")
+            #   - valid_until null OU >= hoje (não é "expirada")
+            # Permite ao personal programar fichas futuras sem confundir o
+            # aluno até a data programada.
+            from django.db.models import Q
+            from datetime import date
+            today = date.today()
+            qs = qs.filter(
+                Q(valid_from__isnull=True) | Q(valid_from__lte=today)
+            ).filter(
+                Q(valid_until__isnull=True) | Q(valid_until__gte=today)
+            )
 
         workouts_data = WorkoutDetailSerializer(
             qs, many=True, context={"request": request}
