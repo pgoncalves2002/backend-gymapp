@@ -138,8 +138,70 @@ class Workout(models.Model):
         help_text="Quando True, escondida do aluno e do sync mobile.",
     )
 
+    # Janela de validade da ficha — programação de fichas futuras + expiração.
+    #   - `valid_from` no futuro: aluno NÃO vê a ficha até essa data
+    #     (permite o personal programar a próxima fase do treino com
+    #     antecedência sem confundir o aluno).
+    #   - `valid_until` no passado: aluno NÃO vê mais (ficha expirou).
+    #   - Ambos null = vale pra sempre (comportamento legado das fichas
+    #     antes desta migration).
+    # `valid_from > valid_until` é rejeitado no serializer.
+    valid_from = models.DateField(
+        "Válida a partir de",
+        null=True, blank=True,
+        db_index=True,
+        help_text="Antes desta data, a ficha fica oculta pro aluno (permite "
+                  "agendar fichas futuras). Vazio = vale desde já.",
+    )
+    valid_until = models.DateField(
+        "Válida até",
+        null=True, blank=True,
+        db_index=True,
+        help_text="Depois desta data, a ficha fica oculta pro aluno (expirada). "
+                  "Vazio = sem expiração.",
+    )
+
     created_at = models.DateTimeField("Criada em", auto_now_add=True)
     updated_at = models.DateTimeField("Atualizada em", auto_now=True)
+
+    # ------------------------------------------------------------------
+    # Validade — helpers usados pelo /api/sync/ e por serializers
+    # ------------------------------------------------------------------
+    def is_visible_to_student(self, today=None) -> bool:
+        """True se a ficha deve aparecer pro aluno HOJE.
+
+        Regras:
+          - is_archived → invisível (preexistente)
+          - valid_from > hoje → ainda não começou
+          - valid_until < hoje → expirou
+          - Ambos null → sempre visível
+        """
+        if self.is_archived:
+            return False
+        from datetime import date
+        d = today or date.today()
+        if self.valid_from and self.valid_from > d:
+            return False
+        if self.valid_until and self.valid_until < d:
+            return False
+        return True
+
+    @property
+    def validity_status(self) -> str:
+        """`scheduled` (futura), `active`, `expired` ou `unbounded` (sem datas).
+
+        Usado pra renderizar badge no SPA do trainer (que vê todas, inclusive
+        as fora da janela).
+        """
+        from datetime import date
+        d = date.today()
+        if self.valid_from is None and self.valid_until is None:
+            return "unbounded"
+        if self.valid_from and self.valid_from > d:
+            return "scheduled"
+        if self.valid_until and self.valid_until < d:
+            return "expired"
+        return "active"
 
     class Meta:
         ordering = ["day_label", "name"]

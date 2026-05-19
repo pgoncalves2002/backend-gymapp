@@ -201,7 +201,16 @@ class WorkoutViewSet(viewsets.ModelViewSet):
             # Aluno NUNCA vê fichas arquivadas (em nenhuma ação — list,
             # retrieve, etc.). Pra ele, a ficha arquivada simplesmente
             # não existe.
-            return qs.filter(student=user, is_archived=False)
+            # Idem janela de validade: ficha fora da janela = inexistente
+            # pro aluno (mesma regra do /api/sync/).
+            from django.db.models import Q
+            from datetime import date
+            today = date.today()
+            return (
+                qs.filter(student=user, is_archived=False)
+                  .filter(Q(valid_from__isnull=True) | Q(valid_from__lte=today))
+                  .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today))
+            )
 
         # Trainer: filtro `?archived=` aplica APENAS no list. Retrieve/update/
         # destroy precisam ver fichas arquivadas pra desarquivar/apagar.

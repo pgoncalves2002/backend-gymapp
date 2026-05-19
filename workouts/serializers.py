@@ -101,6 +101,11 @@ class _WorkoutBaseSerializer(serializers.ModelSerializer):
     trainer = serializers.PrimaryKeyRelatedField(read_only=True)
     exercises_count = serializers.SerializerMethodField()
     estimated_duration_minutes = serializers.SerializerMethodField()
+    # Computed: "unbounded" | "scheduled" | "active" | "expired" — usado
+    # pelo SPA do trainer pra mostrar badge na lista de fichas.
+    # `read_only=True` + nome batendo com a property do model = DRF acessa
+    # `obj.validity_status` automaticamente.
+    validity_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = Workout
@@ -113,12 +118,28 @@ class _WorkoutBaseSerializer(serializers.ModelSerializer):
             "day_label",
             "notes",
             "is_archived",
+            "valid_from",
+            "valid_until",
+            "validity_status",
             "exercises_count",
             "estimated_duration_minutes",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "trainer", "created_at", "updated_at")
+        read_only_fields = ("id", "trainer", "validity_status", "created_at", "updated_at")
+
+    def validate(self, attrs):
+        # valid_from não pode ser depois de valid_until. Se um dos dois vier
+        # vazio na request, completa com o atual da instance pra checar
+        # contra o estado salvo (PATCH parcial).
+        instance = getattr(self, "instance", None)
+        v_from = attrs.get("valid_from", getattr(instance, "valid_from", None))
+        v_until = attrs.get("valid_until", getattr(instance, "valid_until", None))
+        if v_from and v_until and v_from > v_until:
+            raise serializers.ValidationError({
+                "valid_until": "A data final precisa ser igual ou posterior à inicial.",
+            })
+        return attrs
 
     def get_exercises_count(self, obj: Workout) -> int:
         cached = getattr(obj, "_exercises_count", None)
