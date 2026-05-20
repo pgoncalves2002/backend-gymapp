@@ -264,3 +264,53 @@ class WebhookTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         sub.refresh_from_db()
         self.assertEqual(sub.status, Subscription.Status.ACTIVE)
+
+    @override_settings(
+        STRIPE_SECRET_KEY="sk_test_fake",
+        STRIPE_WEBHOOK_SECRET="whsec_test_fake",
+    )
+    def test_checkout_session_completed_creates_local_subscription(self):
+        trainer = _make_trainer()
+        event = {
+            "type": "checkout.session.completed",
+            "data": {"object": {
+                "mode": "subscription",
+                "customer": "cus_new",
+                "subscription": "sub_new",
+                "metadata": {"user_id": str(trainer.id), "plan": "annual"},
+            }},
+        }
+        with patch("stripe.Webhook.construct_event", return_value=event):
+            resp = self.client.post(
+                self.url,
+                data=b"{}",
+                content_type="application/json",
+                HTTP_STRIPE_SIGNATURE="t=1,v1=whatever",
+            )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        row = Subscription.objects.get(user=trainer)
+        self.assertEqual(row.stripe_customer_id, "cus_new")
+        self.assertEqual(row.stripe_subscription_id, "sub_new")
+        self.assertEqual(row.status, Subscription.Status.ACTIVE)
+        self.assertEqual(row.plan, "annual")
+
+    @override_settings(
+        STRIPE_SECRET_KEY="sk_test_fake",
+        STRIPE_WEBHOOK_SECRET="whsec_test_fake",
+    )
+    def test_checkout_session_completed_ignored_when_not_subscription(self):
+        trainer = _make_trainer()
+        event = {
+            "type": "checkout.session.completed",
+            "data": {"object": {
+                "mode": "payment",  # one-off, não nos interessa
+                "metadata": {"user_id": str(trainer.id)},
+            }},
+        }
+        with patch("stripe.Webhook.construct_event", return_value=event):
+            resp = self.client.post(
+                self.url, data=b"{}", content_type="application/json",
+                HTTP_STRIPE_SIGNATURE="t=1,v1=whatever",
+            )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(Subscription.objects.filter(user=trainer).exists())

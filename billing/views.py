@@ -1,12 +1,12 @@
 """
 Views do app billing.
 
-Fluxo (Payment Element / "create subscription default_incomplete"):
+Fluxo (Stripe Checkout hospedado):
   1. POST /api/billing/signup/   → cria personal no plano GRÁTIS (sem Stripe),
      devolve JWT. (Endpoint público.)
-  2. POST /api/billing/subscribe/ → cria Customer + Subscription
-     `default_incomplete` na Stripe e devolve o `client_secret` pro front
-     confirmar com o Payment Element. (Personal logado.)
+  2. POST /api/billing/subscribe/ → cria uma Checkout Session na Stripe e
+     devolve a `url` pro front redirecionar. O personal paga no domínio da
+     Stripe e volta pro `success_url`. (Personal logado.)
   3. POST /api/billing/webhook/  → Stripe avisa pagamento/mudanças; aqui é a
      FONTE DA VERDADE do status. (Público + assinatura verificada.)
   4. GET  /api/billing/subscription/ → estado atual (pro paywall/poll).
@@ -65,9 +65,11 @@ class SubscribeView(APIView):
     """
     POST /api/billing/subscribe/  body: {"plan": "monthly"|"annual"}
 
-    Cria (ou reusa) o Customer da Stripe e abre uma Subscription
-    `default_incomplete`. Devolve o `client_secret` pro front confirmar o
-    pagamento com o Payment Element.
+    Cria uma Stripe Checkout Session em modo subscription e devolve a `url`
+    da página hospedada. O front faz `window.location.href = url`. Depois do
+    pagamento, a Stripe redireciona pro `BILLING_SUCCESS_URL` e a Subscription
+    real é criada/atualizada pelos webhooks (`checkout.session.completed`,
+    `customer.subscription.*`, `invoice.paid`).
     """
 
     permission_classes = (permissions.IsAuthenticated, IsTrainer)
@@ -86,40 +88,43 @@ class SubscribeView(APIView):
             defaults={"plan": plan, "status": Subscription.Status.INCOMPLETE},
         )
 
-        # Reusa o Customer se já existe; senão cria. Salva ANTES de tentar
-        # criar a Subscription pra não vazar Customer órfão se a chamada
-        # seguinte falhar (retry reusa o mesmo).
-        if not sub_row.stripe_customer_id:
-            customer = stripe.Customer.create(
-                email=user.email or None,
-                name=user.display_name or user.username,
-                metadata={"user_id": str(user.id)},
-            )
-            sub_row.stripe_customer_id = customer.id
-            sub_row.save(update_fields=["stripe_customer_id"])
-
-        stripe_sub = stripe.Subscription.create(
-            customer=sub_row.stripe_customer_id,
-            items=[{"price": price_id}],
-            payment_behavior="default_incomplete",
-            payment_settings={"save_default_payment_method": "on_subscription"},
-            expand=["latest_invoice.payment_intent", "pending_setup_intent"],
-            metadata={"user_id": str(user.id)},
+        # Pra reusar Customer entre tentativas (e não poluir o Stripe), passa
+        # `customer=` se já temos id; senão `customer_email=` e a Stripe cria.
+        customer_kwargs = (
+            {"customer": sub_row.stripe_customer_id}
+            if sub_row.stripe_customer_id
+            else {"customer_email": user.email or None}
         )
 
-        sub_row.stripe_subscription_id = stripe_sub.id
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=getattr(
+                settings,
+                "BILLING_SUCCESS_URL",
+                "https://coach.fichagym.com/billing/return?session_id={CHECKOUT_SESSION_ID}",
+            ),
+            cancel_url=getattr(
+                settings, "BILLING_CANCEL_URL", "https://coach.fichagym.com/billing"
+            ),
+            allow_promotion_codes=True,
+            locale="pt-BR",
+            metadata={"user_id": str(user.id), "plan": plan},
+            # Espelha o metadata na Subscription criada pelo Checkout — ajuda o
+            # webhook a achar o User quando `customer.subscription.created`
+            # chega antes de `checkout.session.completed`.
+            subscription_data={"metadata": {"user_id": str(user.id), "plan": plan}},
+            **customer_kwargs,
+        )
+
+        # Guarda o plan escolhido na row pra o webhook não depender só do
+        # metadata da Stripe se ele falhar.
         sub_row.plan = plan
         sub_row.price_id = price_id
-        sub_row.status = stripe_sub.status
-        sub_row.save()
+        sub_row.save(update_fields=["plan", "price_id", "updated_at"])
 
-        client_secret = _extract_client_secret(stripe_sub)
         return Response(
-            {
-                "client_secret": client_secret,
-                "subscription_id": stripe_sub.id,
-                "publishable_key": getattr(settings, "STRIPE_PUBLISHABLE_KEY", ""),
-            },
+            {"url": session.url, "session_id": session.id},
             status=status.HTTP_200_OK,
         )
 
@@ -211,7 +216,9 @@ class StripeWebhookView(APIView):
         obj = event["data"]["object"]
 
         try:
-            if event_type in (
+            if event_type == "checkout.session.completed":
+                _sync_from_checkout(obj)
+            elif event_type in (
                 "customer.subscription.created",
                 "customer.subscription.updated",
                 "customer.subscription.deleted",
@@ -234,32 +241,56 @@ class StripeWebhookView(APIView):
 # ---------------------------------------------------------------------------
 # Helpers de webhook
 # ---------------------------------------------------------------------------
-def _extract_client_secret(stripe_sub) -> str | None:
-    """
-    Com billing_mode flexible (API 2025-06-30.basil+), o secret vem em
-    `latest_invoice.confirmation_secret.client_secret`. Em casos com trial,
-    pode vir um `pending_setup_intent`.
-    """
-    pending = getattr(stripe_sub, "pending_setup_intent", None)
-    if pending:
-        return pending.get("client_secret") if isinstance(pending, dict) else getattr(pending, "client_secret", None)
-    invoice = getattr(stripe_sub, "latest_invoice", None)
-    if not invoice:
-        return None
-    confirmation = invoice.get("confirmation_secret") if isinstance(invoice, dict) else getattr(invoice, "confirmation_secret", None)
-    if confirmation:
-        return confirmation.get("client_secret") if isinstance(confirmation, dict) else getattr(confirmation, "client_secret", None)
-    # Fallback p/ integrações em billing_mode clássico
-    pi = invoice.get("payment_intent") if isinstance(invoice, dict) else getattr(invoice, "payment_intent", None)
-    if isinstance(pi, dict):
-        return pi.get("client_secret")
-    return getattr(pi, "client_secret", None) if pi else None
-
-
 def _ts_to_dt(unix_ts):
     if not unix_ts:
         return None
     return datetime.fromtimestamp(int(unix_ts), tz=dt_timezone.utc)
+
+
+def _resolve_user_from_metadata(metadata: dict):
+    """Acha o User pelo metadata.user_id (setado em todas as Checkout Sessions)."""
+    from accounts.models import User  # import lazy pra evitar circular
+
+    user_id = (metadata or {}).get("user_id")
+    if not user_id:
+        return None
+    try:
+        return User.objects.get(pk=int(user_id))
+    except (User.DoesNotExist, ValueError, TypeError):
+        return None
+
+
+def _sync_from_checkout(session: dict) -> None:
+    """
+    checkout.session.completed → liga a Subscription criada pela Stripe ao
+    nosso User via metadata.user_id. Cria a linha local se ainda não existir.
+    """
+    if session.get("mode") != "subscription":
+        return  # Checkout `payment` (one-off) não nos interessa
+    user = _resolve_user_from_metadata(session.get("metadata") or {})
+    if user is None:
+        log.warning("checkout.session.completed sem user_id resolvível")
+        return
+    customer_id = session.get("customer")
+    subscription_id = session.get("subscription")
+    if not customer_id or not subscription_id:
+        return
+    row, _ = Subscription.objects.get_or_create(
+        user=user,
+        defaults={
+            "stripe_customer_id": customer_id,
+            "stripe_subscription_id": subscription_id,
+            "plan": (session.get("metadata") or {}).get("plan", Subscription.Plan.MONTHLY),
+            "status": Subscription.Status.ACTIVE,
+        },
+    )
+    row.stripe_customer_id = customer_id
+    row.stripe_subscription_id = subscription_id
+    if row.status not in {Subscription.Status.ACTIVE, Subscription.Status.TRIALING}:
+        # checkout.session.completed implica pagamento confirmado — vira active.
+        # A próxima customer.subscription.* eventualmente confirma e sobrescreve.
+        row.status = Subscription.Status.ACTIVE
+    row.save()
 
 
 def _sync_from_subscription(stripe_sub: dict) -> None:
@@ -272,10 +303,25 @@ def _sync_from_subscription(stripe_sub: dict) -> None:
             stripe_customer_id=stripe_sub.get("customer")
         ).first()
         if row is None:
-            log.warning("Subscription %s sem linha local — ignorando", sub_id)
-            return
+            # último recurso: metadata.user_id (setado pelo subscribe via
+            # subscription_data.metadata) — útil quando o webhook chega antes
+            # do checkout.session.completed.
+            user = _resolve_user_from_metadata(stripe_sub.get("metadata") or {})
+            if user is None:
+                log.warning("Subscription %s sem linha local — ignorando", sub_id)
+                return
+            row, _ = Subscription.objects.get_or_create(
+                user=user,
+                defaults={
+                    "stripe_customer_id": stripe_sub.get("customer") or "",
+                    "plan": Subscription.Plan.MONTHLY,
+                    "status": Subscription.Status.INCOMPLETE,
+                },
+            )
         row.stripe_subscription_id = sub_id
 
+    if stripe_sub.get("customer"):
+        row.stripe_customer_id = stripe_sub.get("customer")
     row.status = stripe_sub.get("status", row.status)
     row.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
     row.current_period_end = _ts_to_dt(stripe_sub.get("current_period_end"))

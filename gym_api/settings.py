@@ -177,6 +177,15 @@ STRIPE_PRICES = {
 BILLING_PORTAL_RETURN_URL = env(
     "BILLING_PORTAL_RETURN_URL", default="https://coach.fichagym.com/me"
 )
+# Stripe Checkout — pra onde o personal volta após o pagamento (sucesso/cancela).
+# A Stripe interpola `{CHECKOUT_SESSION_ID}` no success_url se presente.
+BILLING_SUCCESS_URL = env(
+    "BILLING_SUCCESS_URL",
+    default="https://coach.fichagym.com/billing/return?session_id={CHECKOUT_SESSION_ID}",
+)
+BILLING_CANCEL_URL = env(
+    "BILLING_CANCEL_URL", default="https://coach.fichagym.com/billing"
+)
 # Plano grátis: quantos alunos um personal sem assinatura paga pode ter.
 FREE_STUDENT_LIMIT = env.int("FREE_STUDENT_LIMIT", default=1)
 
