@@ -86,7 +86,9 @@ class SubscribeView(APIView):
             defaults={"plan": plan, "status": Subscription.Status.INCOMPLETE},
         )
 
-        # Reusa o Customer se já existe; senão cria.
+        # Reusa o Customer se já existe; senão cria. Salva ANTES de tentar
+        # criar a Subscription pra não vazar Customer órfão se a chamada
+        # seguinte falhar (retry reusa o mesmo).
         if not sub_row.stripe_customer_id:
             customer = stripe.Customer.create(
                 email=user.email or None,
@@ -94,14 +96,14 @@ class SubscribeView(APIView):
                 metadata={"user_id": str(user.id)},
             )
             sub_row.stripe_customer_id = customer.id
+            sub_row.save(update_fields=["stripe_customer_id"])
 
         stripe_sub = stripe.Subscription.create(
             customer=sub_row.stripe_customer_id,
             items=[{"price": price_id}],
             payment_behavior="default_incomplete",
             payment_settings={"save_default_payment_method": "on_subscription"},
-            expand=["latest_invoice.confirmation_secret", "pending_setup_intent"],
-            billing_mode={"type": "flexible"},
+            expand=["latest_invoice.payment_intent", "pending_setup_intent"],
             metadata={"user_id": str(user.id)},
         )
 
