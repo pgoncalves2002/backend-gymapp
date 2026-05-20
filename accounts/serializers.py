@@ -19,6 +19,10 @@ class UserSerializer(serializers.ModelSerializer):
 
     is_trainer = serializers.BooleanField(read_only=True)
     is_student = serializers.BooleanField(read_only=True)
+    # Cobrança do app (assinatura do personal) — read-only, pro SPA montar
+    # o paywall/upgrade sem chamada extra.
+    has_active_subscription = serializers.BooleanField(read_only=True)
+    student_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = User
@@ -31,11 +35,16 @@ class UserSerializer(serializers.ModelSerializer):
             "role",
             "birth_date",
             "uses_internal_payment",
+            "is_billing_exempt",
             "is_trainer",
             "is_student",
+            "has_active_subscription",
+            "student_count",
         )
         read_only_fields = (
-            "id", "role", "uses_internal_payment", "is_trainer", "is_student",
+            "id", "role", "uses_internal_payment", "is_billing_exempt",
+            "is_trainer", "is_student", "has_active_subscription",
+            "student_count",
         )
 
 

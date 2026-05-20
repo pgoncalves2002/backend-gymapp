@@ -10,6 +10,7 @@ from accounts.sync_views import SyncView
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/auth/", include("accounts.urls")),
+    path("api/billing/", include("billing.urls")),
     path("api/", include("workouts.urls")),
     path("api/", include("training_sessions.urls")),
     # Sync all-in-one (cross-app: traz user + workouts + exercises)

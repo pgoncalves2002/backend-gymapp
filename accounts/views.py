@@ -10,7 +10,7 @@ import secrets
 
 from rest_framework import filters, generics, permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken
@@ -26,6 +26,17 @@ from .serializers import (
     StudentSerializer,
     UserSerializer,
 )
+
+
+class PaymentRequired(APIException):
+    """402 — limite do plano grátis atingido; precisa assinar pra continuar."""
+
+    status_code = status.HTTP_402_PAYMENT_REQUIRED
+    default_detail = (
+        "Você atingiu o limite de alunos do plano grátis. "
+        "Assine um plano pra cadastrar mais alunos."
+    )
+    default_code = "payment_required"
 
 
 class LoginView(TokenObtainPairView):
@@ -221,6 +232,12 @@ class StudentsViewSet(viewsets.ModelViewSet):
               o que o fluxo default do DRF não permite. `perform_create` só
               recebe o instance — não controla o response.
         """
+        # Gate freemium: no plano grátis o personal só pode ter até
+        # settings.FREE_STUDENT_LIMIT alunos. Pra mais, precisa assinar.
+        # (admin/superuser e isentos passam direto via has_active_subscription.)
+        if not request.user.can_add_student():
+            raise PaymentRequired()
+
         # Valida tudo MENOS a senha — a senha vem do backend.
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)

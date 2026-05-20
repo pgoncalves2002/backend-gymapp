@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "accounts",
     "workouts",
     "training_sessions",
+    "billing",
 ]
 
 MIDDLEWARE = [
@@ -158,6 +159,26 @@ SIMPLE_JWT = {
 # ---------------------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = env.list("DJANGO_CORS_ALLOWED_ORIGINS", default=[])
 # App iOS chama via URLSession (sem CORS). Em dev, libera localhost pra testes web.
+
+# ---------------------------------------------------------------------------
+# Billing / Stripe (assinatura do personal pelo uso do app)
+# ---------------------------------------------------------------------------
+# Modo scaffold: enquanto STRIPE_SECRET_KEY estiver vazia, o app sobe normal e
+# o fluxo GRÁTIS funciona 100%; só os endpoints que falam com a Stripe
+# respondem 503 com mensagem clara. Pluga as chaves de teste e reinicia.
+STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
+STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
+STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
+STRIPE_PRICES = {
+    "monthly": env("STRIPE_PRICE_MONTHLY", default=""),
+    "annual": env("STRIPE_PRICE_ANNUAL", default=""),
+}
+# Pra onde o Customer Portal volta após o personal gerenciar a assinatura.
+BILLING_PORTAL_RETURN_URL = env(
+    "BILLING_PORTAL_RETURN_URL", default="https://coach.fichagym.com/me"
+)
+# Plano grátis: quantos alunos um personal sem assinatura paga pode ter.
+FREE_STUDENT_LIMIT = env.int("FREE_STUDENT_LIMIT", default=1)
 
 # ---------------------------------------------------------------------------
 # Internationalization

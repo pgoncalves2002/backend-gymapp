@@ -8,7 +8,9 @@ Por que estender AbstractUser?
 - Migrar `User` depois é doloroso — começar com custom user evita esse débito.
 """
 
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 
 
@@ -52,6 +54,18 @@ class User(AbstractUser):
         help_text=(
             "Se ativo, este usuário usa o sistema de pagamento interno. "
             "Pra alunos, só pode ser ativo se o trainer também estiver ativo."
+        ),
+    )
+
+    # Isenta o personal da cobrança do app (plano cortesia / grandfather dos
+    # personais que já existiam antes do go-live da cobrança). Quando True,
+    # `has_active_subscription` retorna True sem precisar de Subscription.
+    is_billing_exempt = models.BooleanField(
+        "Isento de cobrança do app?",
+        default=False,
+        help_text=(
+            "Se ativo, este personal usa o app sem assinatura paga "
+            "(cortesia ou conta antiga grandfatherizada)."
         ),
     )
 
@@ -100,3 +114,37 @@ class User(AbstractUser):
     def has_full_access(self) -> bool:
         """Quem pode tudo: superuser do Django ou role=Administrador."""
         return self.is_superuser or self.is_admin_role
+
+    # -----------------------------------------------------------------------
+    # Cobrança do app (assinatura do personal) — ver app `billing`.
+    # Não confundir com `uses_internal_payment` (personal cobra os alunos).
+    # -----------------------------------------------------------------------
+    @property
+    def has_active_subscription(self) -> bool:
+        """
+        True se o personal pode usar o app além do limite grátis.
+        Admin/superuser e isentos (grandfather) sempre passam.
+        """
+        if self.has_full_access or self.is_billing_exempt:
+            return True
+        try:
+            return self.subscription.is_active_like
+        except ObjectDoesNotExist:
+            return False
+
+    @property
+    def student_count(self) -> int:
+        """Quantos alunos este personal cadastrou (scope multi-tenant)."""
+        return User.objects.filter(
+            created_by=self, role=User.Role.STUDENT
+        ).count()
+
+    def can_add_student(self) -> bool:
+        """
+        Regra do freemium: com assinatura ativa (ou isento/admin), sem limite.
+        No plano grátis, pode ter até `settings.FREE_STUDENT_LIMIT` alunos.
+        """
+        if self.has_active_subscription:
+            return True
+        free_limit = getattr(settings, "FREE_STUDENT_LIMIT", 1)
+        return self.student_count < free_limit
