@@ -8,6 +8,8 @@ Por que estender AbstractUser?
 - Migrar `User` depois é doloroso — começar com custom user evita esse débito.
 """
 
+from datetime import date
+
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ObjectDoesNotExist
@@ -88,6 +90,29 @@ class User(AbstractUser):
         null=True, blank=True,
     )
 
+    # Validade do ACESSO do aluno (não da ficha — ver Workout.valid_until).
+    # null = sem limite (acesso liberado pra sempre).
+    # >= hoje = ativo.
+    # < hoje = bloqueado (aluno consegue logar mas não vê fichas).
+    #
+    # Fonte:
+    #   - Aluno SEM pagamento interno: trainer define manualmente.
+    #   - Aluno COM pagamento interno: atualizado automaticamente pelo
+    #     webhook do Asaas quando a cobrança é confirmada (estende até
+    #     o `current_period_end` da subscription).
+    #
+    # Cobranças do tipo "renovação com sucesso" expandem `active_until`
+    # antes de o anterior vencer → o aluno não perde acesso.
+    active_until = models.DateField(
+        "Acesso até",
+        null=True, blank=True,
+        help_text=(
+            "Data até quando o aluno tem acesso ao app. Em branco = sem "
+            "limite. Pra alunos com pagamento interno, é atualizado "
+            "automaticamente pelo webhook do Asaas."
+        ),
+    )
+
     class Meta:
         ordering = ["username"]
         verbose_name = "Usuário"
@@ -148,3 +173,23 @@ class User(AbstractUser):
             return True
         free_limit = getattr(settings, "FREE_STUDENT_LIMIT", 1)
         return self.student_count < free_limit
+
+    # -----------------------------------------------------------------------
+    # Validade do acesso do aluno
+    # -----------------------------------------------------------------------
+    @property
+    def is_within_validity(self) -> bool:
+        """
+        True se o aluno está dentro da validade do acesso.
+
+        Sem `active_until` setado = sem limite (True).
+        Admin/superuser ignoram validade.
+        Trainer não tem validade (só aluno usa esse mecanismo).
+        """
+        if self.has_full_access:
+            return True
+        if self.role != self.Role.STUDENT:
+            return True
+        if not self.active_until:
+            return True
+        return self.active_until >= date.today()

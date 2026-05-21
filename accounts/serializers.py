@@ -23,6 +23,8 @@ class UserSerializer(serializers.ModelSerializer):
     # o paywall/upgrade sem chamada extra.
     has_active_subscription = serializers.BooleanField(read_only=True)
     student_count = serializers.IntegerField(read_only=True)
+    # Validade do acesso do aluno — pro app mostrar banner/bloqueio.
+    is_within_validity = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = User
@@ -40,11 +42,13 @@ class UserSerializer(serializers.ModelSerializer):
             "is_student",
             "has_active_subscription",
             "student_count",
+            "active_until",
+            "is_within_validity",
         )
         read_only_fields = (
             "id", "role", "uses_internal_payment", "is_billing_exempt",
             "is_trainer", "is_student", "has_active_subscription",
-            "student_count",
+            "student_count", "active_until", "is_within_validity",
         )
 
 
@@ -109,6 +113,7 @@ class StudentSerializer(serializers.ModelSerializer):
     )
     is_trainer = serializers.BooleanField(read_only=True)
     is_student = serializers.BooleanField(read_only=True)
+    is_within_validity = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = User
@@ -123,6 +128,8 @@ class StudentSerializer(serializers.ModelSerializer):
             "role",
             "is_active",
             "uses_internal_payment",
+            "active_until",
+            "is_within_validity",
             "is_trainer",
             "is_student",
             "date_joined",
@@ -130,6 +137,7 @@ class StudentSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id", "role", "is_trainer", "is_student",
+            "is_within_validity",
             "date_joined", "updated_at",
         )
         # `email` e `phone` ficam REQUIRED apenas no create. No update
@@ -158,6 +166,33 @@ class StudentSerializer(serializers.ModelSerializer):
                     {"phone": "Telefone é obrigatório no cadastro (usado pro WhatsApp)."}
                 )
         return attrs
+
+    def validate_active_until(self, value):
+        """
+        Trainer só pode editar `active_until` MANUAL quando o aluno NÃO usa
+        pagamento interno. Pra alunos com pagamento interno, esse campo é
+        atualizado automaticamente pelo webhook do Asaas (estende o acesso
+        até o `current_period_end` da subscription) — qualquer edição manual
+        seria sobrescrita logo no próximo pagamento, confundindo o trainer.
+        """
+        # No create, o aluno ainda não existe — value passa.
+        if self.instance is None:
+            return value
+        if not self.instance.uses_internal_payment:
+            return value
+        # Pagamento interno ligado: só admin/superuser sobrescreve.
+        request = self.context.get("request")
+        trainer = getattr(request, "user", None) if request else None
+        if trainer and trainer.has_full_access:
+            return value
+        # Se o valor não está mudando, deixa passar (no caso de PATCH parcial
+        # mandar o valor atual).
+        if value == self.instance.active_until:
+            return value
+        raise serializers.ValidationError(
+            "Alunos com pagamento interno têm a validade atualizada "
+            "automaticamente pelo webhook do Asaas. Não dá pra editar à mão."
+        )
 
     def validate_uses_internal_payment(self, value: bool) -> bool:
         """

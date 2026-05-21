@@ -103,6 +103,24 @@ def _parse_iso(value: str | None):
         return None
 
 
+def _extend_student_validity(sb: StudentBilling) -> None:
+    """
+    Quando uma cobrança do aluno confirma, estende `student.active_until` até
+    o `current_period_end` (próxima cobrança recorrente) ou `dueDate` da
+    avulsa, garantindo que renovação com sucesso = aluno NÃO perde acesso.
+
+    Só estende — nunca encurta. Isso evita que um "pagou só meio mês" reduza
+    o acesso já liberado por uma cobrança anterior.
+    """
+    student = sb.student
+    if not sb.current_period_end:
+        return
+    new_until = sb.current_period_end.date()
+    if not student.active_until or student.active_until < new_until:
+        student.active_until = new_until
+        student.save(update_fields=["active_until", "updated_at"])
+
+
 # ---------------------------------------------------------------------------
 # Connect (subconta do personal)
 # ---------------------------------------------------------------------------
@@ -384,6 +402,8 @@ class SyncStudentBillingView(APIView):
             next_due = _parse_iso(asaas_sub.get("nextDueDate"))
             if next_due:
                 sb.current_period_end = next_due
+            if new_status == StudentBilling.Status.ACTIVE:
+                _extend_student_validity(sb)
         elif sb.asaas_payment_id:
             try:
                 p = asaas_gateway.request("GET", f"/payments/{sb.asaas_payment_id}")
@@ -905,6 +925,7 @@ class ConnectWebhookView(APIView):
                 if period_end:
                     sb.current_period_end = period_end
                 sb.save()
+                _extend_student_validity(sb)
             elif event == "PAYMENT_OVERDUE":
                 sb.status = StudentBilling.Status.PAST_DUE
                 sb.save(update_fields=["status", "updated_at"])

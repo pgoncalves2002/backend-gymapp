@@ -1,5 +1,7 @@
 """Testes do app accounts — gate freemium (limite de alunos do plano grátis)."""
 
+from datetime import date, timedelta
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from rest_framework import status
@@ -133,3 +135,100 @@ class StudentCreateGateAPITests(TestCase):
         self.client.post(self.url, self._payload(1), format="json")
         resp = self.client.post(self.url, self._payload(2), format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+
+
+class StudentValidityTests(TestCase):
+    """User.active_until + is_within_validity + bloqueio nas views do aluno."""
+
+    def setUp(self):
+        self.trainer = _make_trainer()
+        self.student = _make_student_for(self.trainer, n=1)
+
+    def test_no_active_until_means_within_validity(self):
+        self.assertIsNone(self.student.active_until)
+        self.assertTrue(self.student.is_within_validity)
+
+    def test_active_until_in_past_blocks(self):
+        self.student.active_until = date.today() - timedelta(days=1)
+        self.student.save(update_fields=["active_until"])
+        self.assertFalse(self.student.is_within_validity)
+
+    def test_active_until_today_still_valid(self):
+        self.student.active_until = date.today()
+        self.student.save(update_fields=["active_until"])
+        self.assertTrue(self.student.is_within_validity)
+
+    def test_active_until_in_future_within_validity(self):
+        self.student.active_until = date.today() + timedelta(days=30)
+        self.student.save(update_fields=["active_until"])
+        self.assertTrue(self.student.is_within_validity)
+
+    def test_trainer_ignores_active_until(self):
+        # active_until só vale pra aluno — trainer com data passada continua OK.
+        self.trainer.active_until = date.today() - timedelta(days=10)
+        self.trainer.save(update_fields=["active_until"])
+        self.assertTrue(self.trainer.is_within_validity)
+
+    def test_sync_returns_empty_workouts_when_expired(self):
+        from workouts.models import Exercise, Workout
+        ex = Exercise.objects.create(name="Supino", muscle_group="Peito", is_public=True)
+        Workout.objects.create(
+            student=self.student,
+            trainer=self.trainer,
+            name="Treino A",
+            focus="Peito",
+            day_label="seg",
+        )
+        self.student.active_until = date.today() - timedelta(days=1)
+        self.student.save(update_fields=["active_until"])
+        client = APIClient()
+        client.force_authenticate(self.student)
+        resp = client.get("/api/sync/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["workouts"], [])
+        # Mas continua devolvendo o user (pro app mostrar a tela de bloqueio).
+        self.assertFalse(resp.data["user"]["is_within_validity"])
+        # Silenciar warning sobre Exercise não usado
+        ex.delete()
+
+
+class StudentSerializerActiveUntilValidationTests(TestCase):
+    """Trainer só edita active_until quando aluno NÃO usa pagamento interno."""
+
+    def setUp(self):
+        self.trainer = _make_trainer()
+        self.trainer.uses_internal_payment = True
+        self.trainer.save()
+        self.client = APIClient()
+        self.client.force_authenticate(self.trainer)
+
+    def test_can_edit_when_student_not_internal_payment(self):
+        s = _make_student_for(self.trainer, n=1)
+        url = f"/api/auth/students/{s.id}/"
+        resp = self.client.patch(url, {"active_until": "2027-01-01"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        s.refresh_from_db()
+        self.assertEqual(s.active_until.isoformat(), "2027-01-01")
+
+    def test_cannot_edit_when_student_uses_internal_payment(self):
+        s = _make_student_for(self.trainer, n=1)
+        s.uses_internal_payment = True
+        s.save()
+        url = f"/api/auth/students/{s.id}/"
+        resp = self.client.patch(url, {"active_until": "2027-01-01"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("active_until", resp.data)
+        s.refresh_from_db()
+        self.assertIsNone(s.active_until)
+
+    def test_can_clear_when_value_unchanged(self):
+        # Mesmo com uses_internal_payment, mandar o valor ATUAL não dá 400.
+        s = _make_student_for(self.trainer, n=1)
+        s.uses_internal_payment = True
+        s.active_until = date(2027, 1, 1)
+        s.save()
+        url = f"/api/auth/students/{s.id}/"
+        resp = self.client.patch(
+            url, {"active_until": "2027-01-01", "display_name": "Novo"}, format="json"
+        )
+        self.assertEqual(resp.status_code, 200)

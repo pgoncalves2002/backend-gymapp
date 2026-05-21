@@ -73,11 +73,24 @@ class SyncView(APIView):
         )
         if user.is_trainer:
             qs = qs.filter(trainer=user)
+            workouts_data = WorkoutDetailSerializer(
+                qs, many=True, context={"request": request}
+            ).data
         else:
+            # Validade do ACESSO do aluno: se o trainer setou data limite e
+            # ela já passou (ou pagamento atrasou no caso de aluno com
+            # pagamento interno), zera as fichas. Aluno continua logando OK
+            # mas vê tela "Acesso expirado" no app.
+            if not user.is_within_validity:
+                return Response({
+                    "user": UserSerializer(user).data,
+                    "workouts": [],
+                    "synced_at": timezone.now().isoformat(),
+                })
             # Aluno NUNCA recebe fichas arquivadas no sync — elas só ficam
             # visíveis pro trainer no SPA quando ele toggla "Ver arquivadas".
             qs = qs.filter(student=user, is_archived=False)
-            # Janela de validade: aluno só vê fichas dentro do período.
+            # Janela de validade da FICHA (independente da validade do aluno):
             #   - valid_from null OU <= hoje (não é "futura")
             #   - valid_until null OU >= hoje (não é "expirada")
             # Permite ao personal programar fichas futuras sem confundir o
@@ -90,10 +103,9 @@ class SyncView(APIView):
             ).filter(
                 Q(valid_until__isnull=True) | Q(valid_until__gte=today)
             )
-
-        workouts_data = WorkoutDetailSerializer(
-            qs, many=True, context={"request": request}
-        ).data
+            workouts_data = WorkoutDetailSerializer(
+                qs, many=True, context={"request": request}
+            ).data
 
         return Response({
             "user": UserSerializer(user).data,
