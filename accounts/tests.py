@@ -53,7 +53,7 @@ class CanAddStudentModelTests(TestCase):
         trainer = _make_trainer()
         Subscription.objects.create(
             user=trainer,
-            stripe_customer_id="cus_test",
+            asaas_customer_id="cus_test",
             plan=Subscription.Plan.MONTHLY,
             status=Subscription.Status.ACTIVE,
         )
@@ -64,7 +64,7 @@ class CanAddStudentModelTests(TestCase):
         trainer = _make_trainer()
         Subscription.objects.create(
             user=trainer,
-            stripe_customer_id="cus_test",
+            asaas_customer_id="cus_test",
             plan=Subscription.Plan.MONTHLY,
             status=Subscription.Status.PAST_DUE,
         )
@@ -126,7 +126,7 @@ class StudentCreateGateAPITests(TestCase):
     def test_subscribed_trainer_passes_402_gate(self):
         Subscription.objects.create(
             user=self.trainer,
-            stripe_customer_id="cus_test",
+            asaas_customer_id="cus_test",
             plan=Subscription.Plan.MONTHLY,
             status=Subscription.Status.ACTIVE,
         )

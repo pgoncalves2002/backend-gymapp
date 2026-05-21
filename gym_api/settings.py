@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "workouts",
     "training_sessions",
     "billing",
+    "payments",
 ]
 
 MIDDLEWARE = [
@@ -161,33 +162,33 @@ CORS_ALLOWED_ORIGINS = env.list("DJANGO_CORS_ALLOWED_ORIGINS", default=[])
 # App iOS chama via URLSession (sem CORS). Em dev, libera localhost pra testes web.
 
 # ---------------------------------------------------------------------------
-# Billing / Stripe (assinatura do personal pelo uso do app)
+# Billing / Asaas (assinatura do personal pelo uso do app + split dos alunos)
 # ---------------------------------------------------------------------------
-# Modo scaffold: enquanto STRIPE_SECRET_KEY estiver vazia, o app sobe normal e
-# o fluxo GRÁTIS funciona 100%; só os endpoints que falam com a Stripe
-# respondem 503 com mensagem clara. Pluga as chaves de teste e reinicia.
-STRIPE_SECRET_KEY = env("STRIPE_SECRET_KEY", default="")
-STRIPE_PUBLISHABLE_KEY = env("STRIPE_PUBLISHABLE_KEY", default="")
-STRIPE_WEBHOOK_SECRET = env("STRIPE_WEBHOOK_SECRET", default="")
-STRIPE_PRICES = {
-    "monthly": env("STRIPE_PRICE_MONTHLY", default=""),
-    "annual": env("STRIPE_PRICE_ANNUAL", default=""),
+# Modo scaffold: enquanto ASAAS_API_KEY estiver vazia, o app sobe normal e
+# o fluxo GRÁTIS funciona 100%; só os endpoints que falam com o Asaas
+# respondem 503 com mensagem clara. Pluga as chaves de sandbox e reinicia.
+ASAAS_API_KEY = env("ASAAS_API_KEY", default="")
+ASAAS_API_BASE = env("ASAAS_API_BASE", default="https://sandbox.asaas.com/api/v3")
+# Shared secret enviado pelo Asaas no header `asaas-access-token`.
+ASAAS_WEBHOOK_TOKEN = env("ASAAS_WEBHOOK_TOKEN", default="")
+# Valor (em centavos) por plano da assinatura do personal. Definido no servidor
+# pra ninguém forjar o preço pelo front.
+ASAAS_PRICES = {
+    "monthly": env.int("ASAAS_PRICE_MONTHLY_CENTS", default=0),
+    "annual": env.int("ASAAS_PRICE_ANNUAL_CENTS", default=0),
 }
-# Pra onde o Customer Portal volta após o personal gerenciar a assinatura.
-BILLING_PORTAL_RETURN_URL = env(
-    "BILLING_PORTAL_RETURN_URL", default="https://coach.fichagym.com/me"
-)
-# Stripe Checkout — pra onde o personal volta após o pagamento (sucesso/cancela).
-# A Stripe interpola `{CHECKOUT_SESSION_ID}` no success_url se presente.
-BILLING_SUCCESS_URL = env(
-    "BILLING_SUCCESS_URL",
-    default="https://coach.fichagym.com/billing/return?session_id={CHECKOUT_SESSION_ID}",
-)
-BILLING_CANCEL_URL = env(
-    "BILLING_CANCEL_URL", default="https://coach.fichagym.com/billing"
-)
 # Plano grátis: quantos alunos um personal sem assinatura paga pode ter.
 FREE_STUDENT_LIMIT = env.int("FREE_STUDENT_LIMIT", default=1)
+
+# ---------------------------------------------------------------------------
+# Split (personal cobra os alunos; FichaGym fica com %)
+# ---------------------------------------------------------------------------
+# Percentual que a FichaGym fica em cada transação do aluno pro personal.
+# Sai ANTES do rateio (não recai 100% na plataforma). Default 5%.
+PLATFORM_FEE_PERCENT = env.float("PLATFORM_FEE_PERCENT", default=5.0)
+# Wallet ID da plataforma (FichaGym) — só usado se quisermos explicitar
+# o destino da fee em algum cenário. Default: vazio, o Asaas debita da master.
+PLATFORM_WALLET_ID = env("PLATFORM_WALLET_ID", default="")
 
 # ---------------------------------------------------------------------------
 # Internationalization

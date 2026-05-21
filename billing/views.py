@@ -1,18 +1,21 @@
 """
-Views do app billing.
+Views do app billing (assinatura do PERSONAL pelo uso do app).
 
-Fluxo (Stripe Checkout hospedado):
-  1. POST /api/billing/signup/   → cria personal no plano GRÁTIS (sem Stripe),
-     devolve JWT. (Endpoint público.)
-  2. POST /api/billing/subscribe/ → cria uma Checkout Session na Stripe e
-     devolve a `url` pro front redirecionar. O personal paga no domínio da
-     Stripe e volta pro `success_url`. (Personal logado.)
-  3. POST /api/billing/webhook/  → Stripe avisa pagamento/mudanças; aqui é a
-     FONTE DA VERDADE do status. (Público + assinatura verificada.)
+Fluxo (Asaas):
+  1. POST /api/billing/signup/      → cria personal no plano GRÁTIS (sem
+     Asaas), devolve JWT. (Endpoint público.)
+  2. POST /api/billing/subscribe/   → cria Customer (se preciso) + Subscription
+     no Asaas e devolve `invoiceUrl` (página de pagamento hospedada). O front
+     faz `window.location.href = url`. (Personal logado.)
+  3. POST /api/billing/webhook/     → Asaas avisa pagamento/mudanças; aqui é
+     a FONTE DA VERDADE do status. (Público + token verificado.)
   4. GET  /api/billing/subscription/ → estado atual (pro paywall/poll).
-  5. POST /api/billing/portal/   → sessão do Customer Portal (gerenciar cartão,
-     trocar plano, cancelar). (Personal logado.)
+  5. POST /api/billing/cancel/      → cancela a Subscription do Asaas. Como o
+     Asaas não tem Customer Portal hospedado, ficamos com endpoint próprio
+     (substitui o BillingPortalView da Stripe).
 """
+
+from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone as dt_timezone
@@ -26,13 +29,13 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from accounts.permissions import IsTrainer
 from accounts.serializers import UserSerializer
 
+from . import asaas_gateway
 from .models import Subscription
 from .serializers import (
     SubscribeSerializer,
     SubscriptionSerializer,
     TrainerSignupSerializer,
 )
-from .stripe_gateway import get_stripe, price_id_for_plan, stripe_enabled
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +52,27 @@ def _tokens_for(user) -> dict:
     }
 
 
+def _value_reais_for_plan(plan: str) -> float:
+    """
+    Resolve o valor (em reais) no servidor — NUNCA confiar em valor vindo do
+    front. Em modo scaffold (settings sem chave) ainda funciona com defaults.
+    """
+    prices = getattr(settings, "ASAAS_PRICES", {})
+    cents = int(prices.get(plan) or 0)
+    if cents <= 0:
+        raise asaas_gateway.AsaasNotConfigured(
+            f"Valor do plano '{plan}' não configurado em ASAAS_PRICES."
+        )
+    return round(cents / 100.0, 2)
+
+
+def _next_due_date_iso(days_from_today: int = 1) -> str:
+    """O Asaas exige `nextDueDate`/`dueDate` no formato 'YYYY-MM-DD'."""
+    from datetime import date, timedelta
+
+    return (date.today() + timedelta(days=days_from_today)).isoformat()
+
+
 class TrainerSignupView(APIView):
     """POST /api/billing/signup/ — cadastro grátis de personal (sem cartão)."""
 
@@ -63,13 +87,12 @@ class TrainerSignupView(APIView):
 
 class SubscribeView(APIView):
     """
-    POST /api/billing/subscribe/  body: {"plan": "monthly"|"annual"}
+    POST /api/billing/subscribe/  body: {"plan": "monthly"|"annual", "cpf_cnpj"?: "..."}
 
-    Cria uma Stripe Checkout Session em modo subscription e devolve a `url`
-    da página hospedada. O front faz `window.location.href = url`. Depois do
-    pagamento, a Stripe redireciona pro `BILLING_SUCCESS_URL` e a Subscription
-    real é criada/atualizada pelos webhooks (`checkout.session.completed`,
-    `customer.subscription.*`, `invoice.paid`).
+    Cria (ou reutiliza) o Customer e a Subscription no Asaas, e devolve a
+    `invoiceUrl` hospedada. O front faz `window.location.href = url`. Depois
+    do pagamento, o webhook do Asaas (`PAYMENT_CONFIRMED`, `PAYMENT_RECEIVED`)
+    atualiza o status local.
     """
 
     permission_classes = (permissions.IsAuthenticated, IsTrainer)
@@ -78,9 +101,10 @@ class SubscribeView(APIView):
         body = SubscribeSerializer(data=request.data)
         body.is_valid(raise_exception=True)
         plan = body.validated_data["plan"]
+        cpf_cnpj = (body.validated_data.get("cpf_cnpj") or "").strip() or None
 
-        stripe = get_stripe()  # 503 claro se não configurado (modo scaffold)
-        price_id = price_id_for_plan(plan)
+        asaas_gateway.ensure_enabled()  # 503 se sem chave (modo scaffold)
+        value_reais = _value_reais_for_plan(plan)
         user = request.user
 
         sub_row, _ = Subscription.objects.get_or_create(
@@ -88,45 +112,80 @@ class SubscribeView(APIView):
             defaults={"plan": plan, "status": Subscription.Status.INCOMPLETE},
         )
 
-        # Pra reusar Customer entre tentativas (e não poluir o Stripe), passa
-        # `customer=` se já temos id; senão `customer_email=` e a Stripe cria.
-        customer_kwargs = (
-            {"customer": sub_row.stripe_customer_id}
-            if sub_row.stripe_customer_id
-            else {"customer_email": user.email or None}
+        # 1. Customer — reaproveita se já existe.
+        if not sub_row.asaas_customer_id:
+            customer = asaas_gateway.create_customer(
+                name=user.display_name or user.username,
+                email=user.email or None,
+                cpf_cnpj=cpf_cnpj,
+                mobile_phone=user.phone or None,
+                external_reference=f"user_{user.id}",
+            )
+            sub_row.asaas_customer_id = customer["id"]
+
+        # 2. Subscription — sempre cria nova quando o front bate aqui (o
+        # personal pode tentar de novo se a anterior falhou). Asaas não
+        # reaproveita subscriptions canceladas.
+        cycle = "MONTHLY" if plan == Subscription.Plan.MONTHLY else "YEARLY"
+        sub = asaas_gateway.create_subscription(
+            customer_id=sub_row.asaas_customer_id,
+            value_reais=value_reais,
+            cycle=cycle,
+            next_due_date=_next_due_date_iso(days_from_today=1),
+            billing_type="UNDEFINED",  # deixa o pagador escolher PIX/CARD/BOLETO
+            description=(
+                f"FichaGym — assinatura {plan} (personal trainer)"
+            ),
+            external_reference=f"user_{user.id}",
         )
 
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price": price_id, "quantity": 1}],
-            success_url=getattr(
-                settings,
-                "BILLING_SUCCESS_URL",
-                "https://coach.fichagym.com/billing/return?session_id={CHECKOUT_SESSION_ID}",
-            ),
-            cancel_url=getattr(
-                settings, "BILLING_CANCEL_URL", "https://coach.fichagym.com/billing"
-            ),
-            allow_promotion_codes=True,
-            locale="pt-BR",
-            metadata={"user_id": str(user.id), "plan": plan},
-            # Espelha o metadata na Subscription criada pelo Checkout — ajuda o
-            # webhook a achar o User quando `customer.subscription.created`
-            # chega antes de `checkout.session.completed`.
-            subscription_data={"metadata": {"user_id": str(user.id), "plan": plan}},
-            **customer_kwargs,
-        )
-
-        # Guarda o plan escolhido na row pra o webhook não depender só do
-        # metadata da Stripe se ele falhar.
+        sub_row.asaas_subscription_id = sub["id"]
         sub_row.plan = plan
-        sub_row.price_id = price_id
-        sub_row.save(update_fields=["plan", "price_id", "updated_at"])
+        sub_row.price_cents = int(round(value_reais * 100))
+        invoice_url = _first_invoice_url(sub) or ""
+        sub_row.last_invoice_url = invoice_url
+        sub_row.save()
 
         return Response(
-            {"url": session.url, "session_id": session.id},
+            {
+                "url": invoice_url,
+                "subscription_id": sub["id"],
+            },
             status=status.HTTP_200_OK,
         )
+
+
+def _first_invoice_url(sub: dict) -> str | None:
+    """
+    `POST /v3/subscriptions` devolve a subscription mas o link pra pagar a
+    PRIMEIRA fatura está em `/v3/subscriptions/{id}/payments` (ou no objeto
+    Payment criado em background). Pra simplificar, tentamos:
+
+      1. campo `invoiceUrl` direto (algumas versões da API retornam).
+      2. listar `/subscriptions/{id}/payments` e pegar o `invoiceUrl` do
+         primeiro pendente.
+
+    Em scaffold/sandbox sem chave válida o segundo passo falha; nesse caso
+    devolvemos vazio e o front mostra "Pagamento em configuração".
+    """
+    direct = sub.get("invoiceUrl")
+    if direct:
+        return direct
+    sub_id = sub.get("id")
+    if not sub_id:
+        return None
+    try:
+        payments = asaas_gateway.request(
+            "GET", f"/subscriptions/{sub_id}/payments"
+        )
+    except asaas_gateway.AsaasError:
+        return None
+    items = payments.get("data") or []
+    for p in items:
+        url = p.get("invoiceUrl")
+        if url:
+            return url
+    return None
 
 
 class SubscriptionDetailView(APIView):
@@ -148,7 +207,7 @@ class SubscriptionDetailView(APIView):
             "is_billing_exempt": user.is_billing_exempt,
             "free_student_limit": free_limit,
             "student_count": user.student_count,
-            "stripe_enabled": stripe_enabled(),
+            "asaas_enabled": asaas_gateway.asaas_enabled(),
             "subscription": None,
         }
         sub = Subscription.objects.filter(user=user).first()
@@ -157,83 +216,82 @@ class SubscriptionDetailView(APIView):
         return Response(payload)
 
 
-class BillingPortalView(APIView):
+class CancelSubscriptionView(APIView):
     """
-    POST /api/billing/portal/ — cria sessão do Customer Portal e devolve a URL.
+    POST /api/billing/cancel/  — cancela a Subscription do Asaas.
 
-    O portal hospedado da Stripe cobre trocar cartão, mudar plano e cancelar
-    sem precisarmos construir UI pra isso.
+    O Asaas não tem Customer Portal hospedado (como a Stripe), então
+    substituímos por um endpoint próprio: marca `cancel_at_period_end=True`
+    no Asaas, espelha localmente, e o webhook eventualmente confirma.
     """
 
     permission_classes = (permissions.IsAuthenticated, IsTrainer)
 
     def post(self, request):
-        stripe = get_stripe()
         sub = Subscription.objects.filter(user=request.user).first()
-        if not sub or not sub.stripe_customer_id:
+        if not sub or not sub.asaas_subscription_id:
             return Response(
-                {"detail": "Você ainda não tem uma assinatura pra gerenciar."},
+                {"detail": "Você ainda não tem uma assinatura ativa pra cancelar."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        return_url = request.data.get("return_url") or getattr(
-            settings, "BILLING_PORTAL_RETURN_URL", "https://coach.fichagym.com/me"
-        )
-        portal = stripe.billing_portal.Session.create(
-            customer=sub.stripe_customer_id, return_url=return_url
-        )
-        return Response({"url": portal.url})
+        asaas_gateway.ensure_enabled()
+        try:
+            asaas_gateway.cancel_subscription(sub.asaas_subscription_id)
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        sub.status = Subscription.Status.CANCELED
+        sub.cancel_at_period_end = True
+        sub.save(update_fields=["status", "cancel_at_period_end", "updated_at"])
+        return Response({"detail": "Assinatura cancelada."})
 
 
-class StripeWebhookView(APIView):
+class AsaasWebhookView(APIView):
     """
-    POST /api/billing/webhook/ — recebe eventos da Stripe.
+    POST /api/billing/webhook/ — recebe eventos do Asaas.
 
-    Verifica a assinatura com STRIPE_WEBHOOK_SECRET e usa `request.body` cru
-    (NÃO `request.data`, que re-serializa e quebra a assinatura). Idempotente:
-    sempre copia o estado atual do objeto Stripe.
+    Autenticação: o Asaas envia um token no header `asaas-access-token`
+    (configurado por nós no painel quando registramos a URL). Sem assinatura
+    HMAC — é um shared secret. Comparação tem que ser constante-tempo.
+
+    Idempotente: o handler sempre copia o estado do objeto recebido. O Asaas
+    também manda `event` e `payment`/`subscription` no body.
     """
 
     permission_classes = (permissions.AllowAny,)
     authentication_classes = ()  # webhook não é autenticado por JWT
 
     def post(self, request):
-        secret = getattr(settings, "STRIPE_WEBHOOK_SECRET", "")
-        if not secret:
+        import hmac
+        import json
+
+        expected = getattr(settings, "ASAAS_WEBHOOK_TOKEN", "")
+        if not expected:
             return Response(
                 {"detail": "Webhook não configurado."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        stripe = get_stripe()
-        sig = request.META.get("HTTP_STRIPE_SIGNATURE", "")
+        # Asaas: header `asaas-access-token` (case-insensitive em request.headers).
+        received = request.headers.get("asaas-access-token") or request.META.get(
+            "HTTP_ASAAS_ACCESS_TOKEN", ""
+        )
+        if not hmac.compare_digest(received or "", expected):
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
         try:
-            event = stripe.Webhook.construct_event(request.body, sig, secret)
+            payload = json.loads(request.body or b"{}")
         except ValueError:
-            return Response(status=status.HTTP_400_BAD_REQUEST)  # payload inválido
-        except stripe.error.SignatureVerificationError:
-            return Response(status=status.HTTP_400_BAD_REQUEST)  # assinatura inválida
+            return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        event_type = event["type"]
-        obj = event["data"]["object"]
-
+        event = payload.get("event") or ""
         try:
-            if event_type == "checkout.session.completed":
-                _sync_from_checkout(obj)
-            elif event_type in (
-                "customer.subscription.created",
-                "customer.subscription.updated",
-                "customer.subscription.deleted",
-            ):
-                _sync_from_subscription(obj)
-            elif event_type == "invoice.paid":
-                _sync_from_invoice(obj, fallback_status=Subscription.Status.ACTIVE)
-            elif event_type == "invoice.payment_failed":
-                _sync_from_invoice(
-                    obj, fallback_status=Subscription.Status.PAST_DUE
-                )
+            if event.startswith("PAYMENT_"):
+                _handle_payment_event(event, payload.get("payment") or {})
+            elif event.startswith("SUBSCRIPTION_"):
+                _handle_subscription_event(event, payload.get("subscription") or {})
             else:
-                log.info("Webhook Stripe ignorado: %s", event_type)
-        except Exception:  # nunca devolve 500 pra Stripe — ela re-tenta em loop
-            log.exception("Erro processando webhook %s", event_type)
+                log.info("Webhook Asaas ignorado: %s", event)
+        except Exception:  # nunca devolve 500 ao Asaas — ele re-tenta em loop
+            log.exception("Erro processando webhook Asaas %s", event)
 
         return Response(status=status.HTTP_200_OK)
 
@@ -241,106 +299,80 @@ class StripeWebhookView(APIView):
 # ---------------------------------------------------------------------------
 # Helpers de webhook
 # ---------------------------------------------------------------------------
-def _ts_to_dt(unix_ts):
-    if not unix_ts:
-        return None
-    return datetime.fromtimestamp(int(unix_ts), tz=dt_timezone.utc)
-
-
-def _resolve_user_from_metadata(metadata: dict):
-    """Acha o User pelo metadata.user_id (setado em todas as Checkout Sessions)."""
-    from accounts.models import User  # import lazy pra evitar circular
-
-    user_id = (metadata or {}).get("user_id")
-    if not user_id:
+def _parse_iso_date(value: str | None):
+    if not value:
         return None
     try:
-        return User.objects.get(pk=int(user_id))
-    except (User.DoesNotExist, ValueError, TypeError):
+        # Asaas devolve "YYYY-MM-DD" pros vencimentos e ISO completo em
+        # `dateCreated`. Normaliza pra datetime UTC.
+        if "T" in value:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value).replace(tzinfo=dt_timezone.utc)
+    except ValueError:
         return None
 
 
-def _sync_from_checkout(session: dict) -> None:
+def _find_subscription_row(payment_or_sub: dict) -> Subscription | None:
+    """Resolve a linha local por subscription/customer/externalReference."""
+    sub_id = payment_or_sub.get("subscription") or payment_or_sub.get("id")
+    if sub_id:
+        row = Subscription.objects.filter(asaas_subscription_id=sub_id).first()
+        if row:
+            return row
+    customer = payment_or_sub.get("customer")
+    if customer:
+        row = Subscription.objects.filter(asaas_customer_id=customer).first()
+        if row:
+            return row
+    ext = payment_or_sub.get("externalReference") or ""
+    if ext.startswith("user_"):
+        from accounts.models import User as _User
+
+        try:
+            uid = int(ext.split("_", 1)[1])
+        except ValueError:
+            return None
+        return Subscription.objects.filter(user_id=uid).first()
+    return None
+
+
+def _handle_payment_event(event: str, payment: dict) -> None:
     """
-    checkout.session.completed → liga a Subscription criada pela Stripe ao
-    nosso User via metadata.user_id. Cria a linha local se ainda não existir.
+    Atualiza a Subscription a partir de um Payment do Asaas.
+
+    Eventos relevantes:
+      - PAYMENT_CONFIRMED / PAYMENT_RECEIVED → status ACTIVE.
+      - PAYMENT_OVERDUE                      → status PAST_DUE.
+      - PAYMENT_REFUNDED / PAYMENT_DELETED   → não muda status diretamente
+        (cancelamento vem via SUBSCRIPTION_*).
     """
-    if session.get("mode") != "subscription":
-        return  # Checkout `payment` (one-off) não nos interessa
-    user = _resolve_user_from_metadata(session.get("metadata") or {})
-    if user is None:
-        log.warning("checkout.session.completed sem user_id resolvível")
+    row = _find_subscription_row(payment)
+    if row is None:
+        log.warning("Webhook payment %s sem subscription local", event)
         return
-    customer_id = session.get("customer")
-    subscription_id = session.get("subscription")
-    if not customer_id or not subscription_id:
-        return
-    row, _ = Subscription.objects.get_or_create(
-        user=user,
-        defaults={
-            "stripe_customer_id": customer_id,
-            "stripe_subscription_id": subscription_id,
-            "plan": (session.get("metadata") or {}).get("plan", Subscription.Plan.MONTHLY),
-            "status": Subscription.Status.ACTIVE,
-        },
-    )
-    row.stripe_customer_id = customer_id
-    row.stripe_subscription_id = subscription_id
-    if row.status not in {Subscription.Status.ACTIVE, Subscription.Status.TRIALING}:
-        # checkout.session.completed implica pagamento confirmado — vira active.
-        # A próxima customer.subscription.* eventualmente confirma e sobrescreve.
+    if event in {"PAYMENT_CONFIRMED", "PAYMENT_RECEIVED"}:
         row.status = Subscription.Status.ACTIVE
+        period_end = _parse_iso_date(payment.get("dueDate"))
+        if period_end:
+            row.current_period_end = period_end
+    elif event == "PAYMENT_OVERDUE":
+        row.status = Subscription.Status.PAST_DUE
+    elif event in {"PAYMENT_DELETED"}:
+        # Não dispara cancelamento — o Asaas avisa via SUBSCRIPTION_DELETED.
+        return
     row.save()
 
 
-def _sync_from_subscription(stripe_sub: dict) -> None:
-    """Copia status/period/cancel da Subscription da Stripe pra nossa linha."""
-    sub_id = stripe_sub.get("id")
-    row = Subscription.objects.filter(stripe_subscription_id=sub_id).first()
+def _handle_subscription_event(event: str, sub: dict) -> None:
+    row = _find_subscription_row(sub)
     if row is None:
-        # tenta achar pelo customer (ex.: created chegou antes de salvarmos o id)
-        row = Subscription.objects.filter(
-            stripe_customer_id=stripe_sub.get("customer")
-        ).first()
-        if row is None:
-            # último recurso: metadata.user_id (setado pelo subscribe via
-            # subscription_data.metadata) — útil quando o webhook chega antes
-            # do checkout.session.completed.
-            user = _resolve_user_from_metadata(stripe_sub.get("metadata") or {})
-            if user is None:
-                log.warning("Subscription %s sem linha local — ignorando", sub_id)
-                return
-            row, _ = Subscription.objects.get_or_create(
-                user=user,
-                defaults={
-                    "stripe_customer_id": stripe_sub.get("customer") or "",
-                    "plan": Subscription.Plan.MONTHLY,
-                    "status": Subscription.Status.INCOMPLETE,
-                },
-            )
-        row.stripe_subscription_id = sub_id
-
-    if stripe_sub.get("customer"):
-        row.stripe_customer_id = stripe_sub.get("customer")
-    row.status = stripe_sub.get("status", row.status)
-    row.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
-    row.current_period_end = _ts_to_dt(stripe_sub.get("current_period_end"))
-    items = (stripe_sub.get("items") or {}).get("data") or []
-    if items:
-        price = items[0].get("price") or {}
-        if price.get("id"):
-            row.price_id = price["id"]
+        log.warning("Webhook subscription %s sem linha local", event)
+        return
+    if event == "SUBSCRIPTION_DELETED":
+        row.status = Subscription.Status.CANCELED
+        row.cancel_at_period_end = True
+    elif event in {"SUBSCRIPTION_CREATED", "SUBSCRIPTION_UPDATED"}:
+        next_due = _parse_iso_date(sub.get("nextDueDate"))
+        if next_due:
+            row.current_period_end = next_due
     row.save()
-
-
-def _sync_from_invoice(invoice: dict, *, fallback_status: str) -> None:
-    """invoice.paid / invoice.payment_failed → atualiza a linha pelo subscription."""
-    sub_id = invoice.get("subscription")
-    if not sub_id:
-        return
-    row = Subscription.objects.filter(stripe_subscription_id=sub_id).first()
-    if row is None:
-        log.warning("Invoice da subscription %s sem linha local", sub_id)
-        return
-    row.status = fallback_status
-    row.save(update_fields=["status", "updated_at"])

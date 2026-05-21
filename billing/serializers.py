@@ -14,7 +14,7 @@ class TrainerSignupSerializer(serializers.ModelSerializer):
     Auto-cadastro PÚBLICO de personal trainer (plano grátis, sem cartão).
 
     Diferente do RegisterSerializer de aluno (em accounts), aqui o role é
-    forçado a TRAINER. Não cria nada na Stripe — o personal entra no plano
+    forçado a TRAINER. Não cria nada no Asaas — o personal entra no plano
     grátis e só assina depois, quando quiser passar do limite de alunos.
     """
 
@@ -56,6 +56,7 @@ class SubscribeSerializer(serializers.Serializer):
     """Body de POST /api/billing/subscribe/."""
 
     plan = serializers.ChoiceField(choices=Subscription.Plan.choices)
+    cpf_cnpj = serializers.CharField(required=False, allow_blank=True, max_length=20)
 
 
 class SubscriptionSerializer(serializers.ModelSerializer):
@@ -68,8 +69,10 @@ class SubscriptionSerializer(serializers.ModelSerializer):
         fields = (
             "status",
             "plan",
+            "price_cents",
             "current_period_end",
             "cancel_at_period_end",
+            "last_invoice_url",
             "is_active_like",
         )
         read_only_fields = fields

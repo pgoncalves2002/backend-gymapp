@@ -1,10 +1,10 @@
-"""Testes do app billing — signup grátis, status da assinatura e webhook."""
+"""Testes do app billing — signup grátis, estado da assinatura e webhook Asaas."""
 
+import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
-from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -49,7 +49,7 @@ class TrainerSignupTests(TestCase):
         self.assertFalse(user.is_billing_exempt)
 
     def test_role_is_forced_trainer_even_if_client_lies(self):
-        self.payload["role"] = User.Role.ADMIN  # tentativa de privilege escalation
+        self.payload["role"] = User.Role.ADMIN
         resp = self.client.post(self.url, self.payload, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         user = User.objects.get(username="novo_personal")
@@ -89,7 +89,7 @@ class HasActiveSubscriptionTests(TestCase):
         trainer = _make_trainer()
         Subscription.objects.create(
             user=trainer,
-            stripe_customer_id="cus_test",
+            asaas_customer_id="cus_test",
             plan=Subscription.Plan.MONTHLY,
             status=Subscription.Status.ACTIVE,
         )
@@ -99,7 +99,7 @@ class HasActiveSubscriptionTests(TestCase):
         trainer = _make_trainer()
         Subscription.objects.create(
             user=trainer,
-            stripe_customer_id="cus_test",
+            asaas_customer_id="cus_test",
             plan=Subscription.Plan.MONTHLY,
             status=Subscription.Status.TRIALING,
         )
@@ -109,7 +109,7 @@ class HasActiveSubscriptionTests(TestCase):
         trainer = _make_trainer()
         Subscription.objects.create(
             user=trainer,
-            stripe_customer_id="cus_test",
+            asaas_customer_id="cus_test",
             plan=Subscription.Plan.MONTHLY,
             status=Subscription.Status.PAST_DUE,
         )
@@ -143,174 +143,242 @@ class SubscriptionDetailViewTests(TestCase):
         self.trainer = _make_trainer()
         self.client.force_authenticate(self.trainer)
 
-    def test_reports_stripe_disabled_in_scaffold_mode(self):
-        with override_settings(STRIPE_SECRET_KEY=""):
+    def test_reports_asaas_disabled_in_scaffold_mode(self):
+        with override_settings(ASAAS_API_KEY=""):
             resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertFalse(resp.data["stripe_enabled"])
+        self.assertFalse(resp.data["asaas_enabled"])
         self.assertFalse(resp.data["has_active_subscription"])
         self.assertIsNone(resp.data["subscription"])
 
-    def test_reports_stripe_enabled_when_key_set(self):
-        with override_settings(STRIPE_SECRET_KEY="sk_test_fake"):
+    def test_reports_asaas_enabled_when_key_set(self):
+        with override_settings(ASAAS_API_KEY="$aact_test_fake"):
             resp = self.client.get(self.url)
-        self.assertTrue(resp.data["stripe_enabled"])
+        self.assertTrue(resp.data["asaas_enabled"])
 
     def test_returns_subscription_snapshot_when_exists(self):
         Subscription.objects.create(
             user=self.trainer,
-            stripe_customer_id="cus_test",
+            asaas_customer_id="cus_test",
             plan=Subscription.Plan.ANNUAL,
             status=Subscription.Status.ACTIVE,
+            price_cents=30000,
         )
         resp = self.client.get(self.url)
         self.assertEqual(resp.data["subscription"]["status"], "active")
         self.assertEqual(resp.data["subscription"]["plan"], "annual")
+        self.assertEqual(resp.data["subscription"]["price_cents"], 30000)
         self.assertTrue(resp.data["subscription"]["is_active_like"])
 
 
 class ScaffoldEndpointTests(TestCase):
-    """Endpoints que dependem da Stripe devem responder 503 sem chave."""
+    """Endpoints que dependem do Asaas devem responder 503 sem chave."""
 
     def setUp(self):
         self.client = APIClient()
         self.trainer = _make_trainer()
         self.client.force_authenticate(self.trainer)
 
-    @override_settings(STRIPE_SECRET_KEY="")
+    @override_settings(ASAAS_API_KEY="")
     def test_subscribe_returns_503_without_key(self):
         resp = self.client.post(
             "/api/billing/subscribe/", {"plan": "monthly"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    @override_settings(STRIPE_SECRET_KEY="")
-    def test_portal_returns_503_without_key(self):
-        resp = self.client.post("/api/billing/portal/", {}, format="json")
+    @override_settings(ASAAS_API_KEY="")
+    def test_cancel_returns_400_without_subscription(self):
+        # Sem assinatura local nem chave — devolve 400 ("nada pra cancelar").
+        resp = self.client.post("/api/billing/cancel/", {}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @override_settings(ASAAS_API_KEY="")
+    def test_cancel_returns_503_when_has_subscription_but_no_key(self):
+        Subscription.objects.create(
+            user=self.trainer,
+            asaas_customer_id="cus_test",
+            asaas_subscription_id="sub_test",
+            plan=Subscription.Plan.MONTHLY,
+            status=Subscription.Status.ACTIVE,
+        )
+        resp = self.client.post("/api/billing/cancel/", {}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class SubscribeViewTests(TestCase):
+    """POST /api/billing/subscribe/ — cria customer+subscription no Asaas."""
+
+    url = "/api/billing/subscribe/"
+
+    def setUp(self):
+        self.client = APIClient()
+        self.trainer = _make_trainer()
+        self.client.force_authenticate(self.trainer)
+
+    @override_settings(
+        ASAAS_API_KEY="$aact_test_fake",
+        ASAAS_PRICES={"monthly": 4000, "annual": 30000},
+    )
+    def test_creates_customer_and_subscription_and_returns_invoice_url(self):
+        # Mocka as 2 chamadas HTTP (customer + subscription) + a busca da
+        # primeira fatura.
+        def fake_request(method, path, *, json=None, params=None, api_key=None):
+            if path == "/customers":
+                return {"id": "cus_fake", "name": json["name"]}
+            if path == "/subscriptions":
+                return {
+                    "id": "sub_fake",
+                    "customer": "cus_fake",
+                    "cycle": json["cycle"],
+                    "value": json["value"],
+                    "invoiceUrl": "https://sandbox.asaas.com/i/abc",
+                }
+            return {}
+
+        with patch("billing.asaas_gateway.request", side_effect=fake_request):
+            resp = self.client.post(self.url, {"plan": "monthly"}, format="json")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data["url"], "https://sandbox.asaas.com/i/abc")
+        self.assertEqual(resp.data["subscription_id"], "sub_fake")
+        sub = Subscription.objects.get(user=self.trainer)
+        self.assertEqual(sub.asaas_customer_id, "cus_fake")
+        self.assertEqual(sub.asaas_subscription_id, "sub_fake")
+        self.assertEqual(sub.price_cents, 4000)
+        self.assertEqual(sub.last_invoice_url, "https://sandbox.asaas.com/i/abc")
+
+    @override_settings(
+        ASAAS_API_KEY="$aact_test_fake",
+        ASAAS_PRICES={"monthly": 0, "annual": 0},
+    )
+    def test_returns_503_when_price_not_configured(self):
+        resp = self.client.post(self.url, {"plan": "monthly"}, format="json")
         self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 class WebhookTests(TestCase):
-    """POST /api/billing/webhook/ — assinado pela Stripe."""
+    """POST /api/billing/webhook/ — autenticado por token compartilhado."""
 
     url = "/api/billing/webhook/"
 
     def setUp(self):
         self.client = APIClient()
 
-    @override_settings(STRIPE_WEBHOOK_SECRET="")
-    def test_returns_503_without_secret(self):
-        resp = self.client.post(
-            self.url, data=b"{}", content_type="application/json"
-        )
+    @override_settings(ASAAS_WEBHOOK_TOKEN="")
+    def test_returns_503_without_token(self):
+        resp = self.client.post(self.url, data=b"{}", content_type="application/json")
         self.assertEqual(resp.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    @override_settings(
-        STRIPE_SECRET_KEY="sk_test_fake",
-        STRIPE_WEBHOOK_SECRET="whsec_test_fake",
-    )
-    def test_returns_400_on_invalid_signature(self):
+    @override_settings(ASAAS_WEBHOOK_TOKEN="secret-token")
+    def test_returns_401_on_invalid_token(self):
         resp = self.client.post(
             self.url,
-            data=b'{"id":"evt_1","type":"invoice.paid","data":{"object":{}}}',
+            data=b'{"event":"PAYMENT_CONFIRMED","payment":{}}',
             content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="t=1,v1=deadbeef",
+            HTTP_ASAAS_ACCESS_TOKEN="wrong",
         )
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    @override_settings(
-        STRIPE_SECRET_KEY="sk_test_fake",
-        STRIPE_WEBHOOK_SECRET="whsec_test_fake",
-    )
+    @override_settings(ASAAS_WEBHOOK_TOKEN="secret-token")
     def test_returns_400_on_malformed_payload(self):
         resp = self.client.post(
             self.url,
             data=b"not-json",
             content_type="application/json",
-            HTTP_STRIPE_SIGNATURE="t=1,v1=deadbeef",
+            HTTP_ASAAS_ACCESS_TOKEN="secret-token",
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
-    @override_settings(
-        STRIPE_SECRET_KEY="sk_test_fake",
-        STRIPE_WEBHOOK_SECRET="whsec_test_fake",
-    )
-    def test_syncs_subscription_on_valid_event(self):
+    @override_settings(ASAAS_WEBHOOK_TOKEN="secret-token")
+    def test_payment_confirmed_marks_active(self):
         trainer = _make_trainer()
         sub = Subscription.objects.create(
             user=trainer,
-            stripe_customer_id="cus_test",
-            stripe_subscription_id="sub_test",
+            asaas_customer_id="cus_test",
+            asaas_subscription_id="sub_test",
             plan=Subscription.Plan.MONTHLY,
             status=Subscription.Status.INCOMPLETE,
         )
-        event = {
-            "type": "customer.subscription.updated",
-            "data": {"object": {
-                "id": "sub_test",
+        body = json.dumps({
+            "event": "PAYMENT_CONFIRMED",
+            "payment": {
+                "id": "pay_1",
+                "subscription": "sub_test",
                 "customer": "cus_test",
-                "status": "active",
-                "cancel_at_period_end": False,
-                "items": {"data": [{"price": {"id": "price_monthly"}}]},
-            }},
-        }
-        with patch("stripe.Webhook.construct_event", return_value=event):
-            resp = self.client.post(
-                self.url,
-                data=b"{}",
-                content_type="application/json",
-                HTTP_STRIPE_SIGNATURE="t=1,v1=whatever",
-            )
+                "dueDate": "2026-06-20",
+                "externalReference": f"user_{trainer.id}",
+            },
+        }).encode()
+        resp = self.client.post(
+            self.url,
+            data=body,
+            content_type="application/json",
+            HTTP_ASAAS_ACCESS_TOKEN="secret-token",
+        )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         sub.refresh_from_db()
         self.assertEqual(sub.status, Subscription.Status.ACTIVE)
+        self.assertIsNotNone(sub.current_period_end)
 
-    @override_settings(
-        STRIPE_SECRET_KEY="sk_test_fake",
-        STRIPE_WEBHOOK_SECRET="whsec_test_fake",
-    )
-    def test_checkout_session_completed_creates_local_subscription(self):
+    @override_settings(ASAAS_WEBHOOK_TOKEN="secret-token")
+    def test_payment_overdue_marks_past_due(self):
         trainer = _make_trainer()
-        event = {
-            "type": "checkout.session.completed",
-            "data": {"object": {
-                "mode": "subscription",
-                "customer": "cus_new",
-                "subscription": "sub_new",
-                "metadata": {"user_id": str(trainer.id), "plan": "annual"},
-            }},
-        }
-        with patch("stripe.Webhook.construct_event", return_value=event):
-            resp = self.client.post(
-                self.url,
-                data=b"{}",
-                content_type="application/json",
-                HTTP_STRIPE_SIGNATURE="t=1,v1=whatever",
-            )
+        sub = Subscription.objects.create(
+            user=trainer,
+            asaas_customer_id="cus_test",
+            asaas_subscription_id="sub_test",
+            plan=Subscription.Plan.MONTHLY,
+            status=Subscription.Status.ACTIVE,
+        )
+        body = json.dumps({
+            "event": "PAYMENT_OVERDUE",
+            "payment": {
+                "id": "pay_1",
+                "subscription": "sub_test",
+                "customer": "cus_test",
+            },
+        }).encode()
+        resp = self.client.post(
+            self.url,
+            data=body,
+            content_type="application/json",
+            HTTP_ASAAS_ACCESS_TOKEN="secret-token",
+        )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        row = Subscription.objects.get(user=trainer)
-        self.assertEqual(row.stripe_customer_id, "cus_new")
-        self.assertEqual(row.stripe_subscription_id, "sub_new")
-        self.assertEqual(row.status, Subscription.Status.ACTIVE)
-        self.assertEqual(row.plan, "annual")
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, Subscription.Status.PAST_DUE)
 
-    @override_settings(
-        STRIPE_SECRET_KEY="sk_test_fake",
-        STRIPE_WEBHOOK_SECRET="whsec_test_fake",
-    )
-    def test_checkout_session_completed_ignored_when_not_subscription(self):
+    @override_settings(ASAAS_WEBHOOK_TOKEN="secret-token")
+    def test_subscription_deleted_marks_canceled(self):
         trainer = _make_trainer()
-        event = {
-            "type": "checkout.session.completed",
-            "data": {"object": {
-                "mode": "payment",  # one-off, não nos interessa
-                "metadata": {"user_id": str(trainer.id)},
-            }},
-        }
-        with patch("stripe.Webhook.construct_event", return_value=event):
-            resp = self.client.post(
-                self.url, data=b"{}", content_type="application/json",
-                HTTP_STRIPE_SIGNATURE="t=1,v1=whatever",
-            )
+        sub = Subscription.objects.create(
+            user=trainer,
+            asaas_customer_id="cus_test",
+            asaas_subscription_id="sub_test",
+            plan=Subscription.Plan.MONTHLY,
+            status=Subscription.Status.ACTIVE,
+        )
+        body = json.dumps({
+            "event": "SUBSCRIPTION_DELETED",
+            "subscription": {"id": "sub_test", "customer": "cus_test"},
+        }).encode()
+        resp = self.client.post(
+            self.url,
+            data=body,
+            content_type="application/json",
+            HTTP_ASAAS_ACCESS_TOKEN="secret-token",
+        )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertFalse(Subscription.objects.filter(user=trainer).exists())
+        sub.refresh_from_db()
+        self.assertEqual(sub.status, Subscription.Status.CANCELED)
+        self.assertTrue(sub.cancel_at_period_end)
+
+    @override_settings(ASAAS_WEBHOOK_TOKEN="secret-token")
+    def test_unknown_event_returns_200_and_does_not_error(self):
+        body = json.dumps({"event": "ACCOUNT_STATUS_UPDATED", "data": {}}).encode()
+        resp = self.client.post(
+            self.url,
+            data=body,
+            content_type="application/json",
+            HTTP_ASAAS_ACCESS_TOKEN="secret-token",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)

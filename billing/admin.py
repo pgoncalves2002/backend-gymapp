@@ -9,6 +9,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
         "user",
         "status",
         "plan",
+        "price_cents",
         "current_period_end",
         "cancel_at_period_end",
         "updated_at",
@@ -17,7 +18,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
     search_fields = (
         "user__username",
         "user__email",
-        "stripe_customer_id",
-        "stripe_subscription_id",
+        "asaas_customer_id",
+        "asaas_subscription_id",
     )
     readonly_fields = ("created_at", "updated_at")
