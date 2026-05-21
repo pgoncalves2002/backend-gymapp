@@ -8,6 +8,8 @@ Por que estender AbstractUser?
 - Migrar `User` depois é doloroso — começar com custom user evita esse débito.
 """
 
+from datetime import date
+
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -74,6 +76,23 @@ class User(AbstractUser):
         null=True, blank=True,
     )
 
+    # Validade do ACESSO do aluno (não da ficha — ver Workout.valid_until).
+    # null = sem limite (acesso liberado pra sempre).
+    # >= hoje = ativo.
+    # < hoje = bloqueado (aluno consegue logar mas não vê fichas).
+    #
+    # Fonte: trainer define manualmente na tela do aluno. No futuro, quando
+    # o pagamento interno entrar em produção, alunos com `uses_internal_payment`
+    # vão ter esse campo atualizado automaticamente pelo gateway.
+    active_until = models.DateField(
+        "Acesso até",
+        null=True, blank=True,
+        help_text=(
+            "Data até quando o aluno tem acesso ao app. Em branco = sem "
+            "limite. Trainer define manualmente."
+        ),
+    )
+
     class Meta:
         ordering = ["username"]
         verbose_name = "Usuário"
@@ -100,3 +119,20 @@ class User(AbstractUser):
     def has_full_access(self) -> bool:
         """Quem pode tudo: superuser do Django ou role=Administrador."""
         return self.is_superuser or self.is_admin_role
+
+    @property
+    def is_within_validity(self) -> bool:
+        """
+        True se o aluno está dentro da validade do acesso.
+
+        Sem `active_until` setado = sem limite (True).
+        Admin/superuser ignoram validade.
+        Trainer não tem validade (só aluno usa esse mecanismo).
+        """
+        if self.has_full_access:
+            return True
+        if self.role != self.Role.STUDENT:
+            return True
+        if not self.active_until:
+            return True
+        return self.active_until >= date.today()

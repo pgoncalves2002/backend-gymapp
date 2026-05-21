@@ -19,6 +19,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     is_trainer = serializers.BooleanField(read_only=True)
     is_student = serializers.BooleanField(read_only=True)
+    # Validade do acesso do aluno — pro app mostrar banner/bloqueio.
+    is_within_validity = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = User
@@ -33,9 +35,12 @@ class UserSerializer(serializers.ModelSerializer):
             "uses_internal_payment",
             "is_trainer",
             "is_student",
+            "active_until",
+            "is_within_validity",
         )
         read_only_fields = (
             "id", "role", "uses_internal_payment", "is_trainer", "is_student",
+            "active_until", "is_within_validity",
         )
 
 
@@ -100,6 +105,7 @@ class StudentSerializer(serializers.ModelSerializer):
     )
     is_trainer = serializers.BooleanField(read_only=True)
     is_student = serializers.BooleanField(read_only=True)
+    is_within_validity = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = User
@@ -114,6 +120,8 @@ class StudentSerializer(serializers.ModelSerializer):
             "role",
             "is_active",
             "uses_internal_payment",
+            "active_until",
+            "is_within_validity",
             "is_trainer",
             "is_student",
             "date_joined",
@@ -121,6 +129,7 @@ class StudentSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id", "role", "is_trainer", "is_student",
+            "is_within_validity",
             "date_joined", "updated_at",
         )
         # `email` e `phone` ficam REQUIRED apenas no create. No update
@@ -149,6 +158,29 @@ class StudentSerializer(serializers.ModelSerializer):
                     {"phone": "Telefone é obrigatório no cadastro (usado pro WhatsApp)."}
                 )
         return attrs
+
+    def validate_active_until(self, value):
+        """
+        Trainer pode editar `active_until` manualmente. Pra alunos com
+        `uses_internal_payment=True` no futuro (quando o gateway estiver
+        ativo) o campo passa a ser atualizado automaticamente pelo
+        webhook — qualquer edição manual seria sobrescrita logo no
+        próximo pagamento. Aqui já bloqueamos pra preparar essa transição.
+        """
+        if self.instance is None:
+            return value
+        if not self.instance.uses_internal_payment:
+            return value
+        request = self.context.get("request")
+        trainer = getattr(request, "user", None) if request else None
+        if trainer and trainer.has_full_access:
+            return value
+        if value == self.instance.active_until:
+            return value
+        raise serializers.ValidationError(
+            "Alunos com pagamento interno têm a validade atualizada "
+            "automaticamente. Não dá pra editar à mão."
+        )
 
     def validate_uses_internal_payment(self, value: bool) -> bool:
         """
