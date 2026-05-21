@@ -301,3 +301,71 @@ def create_subaccount(
 
 def get_subaccount(account_id: str) -> dict[str, Any]:
     return request("GET", f"/accounts/{account_id}")
+
+
+def get_balance(*, api_key: str | None = None) -> dict[str, Any]:
+    """GET /v3/finance/balance — saldo da conta. `api_key` = subconta."""
+    return request("GET", "/finance/balance", api_key=api_key)
+
+
+def list_payments(
+    *,
+    status_in: list[str] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """
+    GET /v3/payments — lista de cobranças. Sem `status_in` traz todas.
+    Status válidos: PENDING, RECEIVED, CONFIRMED, OVERDUE, REFUNDED,
+    RECEIVED_IN_CASH, DUNNING_REQUESTED, DUNNING_RECEIVED, AWAITING_RISK_ANALYSIS.
+    """
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if status_in:
+        # A API aceita repetir o parâmetro, mas o nosso `request` passa via
+        # httpx (que aceita lista). Se houver só um status, manda string simples.
+        params["status"] = status_in if len(status_in) > 1 else status_in[0]
+    return request("GET", "/payments", params=params, api_key=api_key)
+
+
+def create_transfer(
+    *,
+    value_reais: float,
+    pix_address_key: str | None = None,
+    pix_address_key_type: str | None = None,
+    bank_account: dict[str, Any] | None = None,
+    description: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """
+    POST /v3/transfers — saque pra chave Pix (rápido) ou conta bancária (TED).
+
+    Pix:  passar `pix_address_key` (+ opcionalmente `pix_address_key_type`,
+          que aceita "CPF", "CNPJ", "EMAIL", "PHONE", "EVP").
+    TED:  passar `bank_account` com {bank: {code}, ownerName, cpfCnpj,
+          agency, account, accountDigit, bankAccountType}.
+    """
+    payload: dict[str, Any] = {"value": value_reais}
+    if pix_address_key:
+        payload["pixAddressKey"] = pix_address_key
+        if pix_address_key_type:
+            payload["pixAddressKeyType"] = pix_address_key_type
+        payload["operationType"] = "PIX"
+    elif bank_account:
+        payload["bankAccount"] = bank_account
+        payload["operationType"] = "TED"
+    if description:
+        payload["description"] = description
+    return request("POST", "/transfers", json=payload, api_key=api_key)
+
+
+def list_transfers(
+    *, limit: int = 50, offset: int = 0, api_key: str | None = None
+) -> dict[str, Any]:
+    """GET /v3/transfers — lista de saques já feitos."""
+    return request(
+        "GET",
+        "/transfers",
+        params={"limit": limit, "offset": offset},
+        api_key=api_key,
+    )

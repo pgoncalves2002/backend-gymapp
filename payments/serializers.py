@@ -96,3 +96,19 @@ class RefundSerializer(serializers.Serializer):
     """POST /api/payments/students/{id}/billing/refund/."""
 
     value_cents = serializers.IntegerField(min_value=0, required=False)
+
+
+class TransferSerializer(serializers.Serializer):
+    """
+    POST /api/payments/me/finance/transfer/
+
+    Saque do personal. MVP: Pix via `pix_key`. TED fica pra depois.
+    `value_cents` opcional — se vazio, saca o saldo todo (cliente preenche).
+    """
+
+    value_cents = serializers.IntegerField(min_value=100)
+    pix_key = serializers.CharField(max_length=140)
+    pix_key_type = serializers.ChoiceField(
+        choices=["CPF", "CNPJ", "EMAIL", "PHONE", "EVP"], required=False, allow_blank=True
+    )
+    description = serializers.CharField(max_length=140, required=False, allow_blank=True)

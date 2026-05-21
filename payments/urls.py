@@ -5,7 +5,13 @@ from django.urls import path
 from .views import (
     ConnectStatusView,
     ConnectWebhookView,
+    FinanceBalanceView,
+    FinanceTransactionsView,
+    FinanceTransferListView,
+    FinanceTransferView,
+    MyBillingCancelView,
     MyBillingView,
+    MyTransactionsView,
     OnboardConnectView,
     RefundBillingView,
     StudentBillingView,
@@ -34,8 +40,23 @@ urlpatterns = [
         RefundBillingView.as_view(),
         name="student-billing-refund",
     ),
+    # Painel financeiro do personal
+    path("me/finance/balance/", FinanceBalanceView.as_view(), name="finance-balance"),
+    path(
+        "me/finance/transactions/",
+        FinanceTransactionsView.as_view(),
+        name="finance-transactions",
+    ),
+    path("me/finance/transfer/", FinanceTransferView.as_view(), name="finance-transfer"),
+    path(
+        "me/finance/transfers/",
+        FinanceTransferListView.as_view(),
+        name="finance-transfers",
+    ),
     # Lado do aluno
     path("me/billing/", MyBillingView.as_view(), name="my-billing"),
+    path("me/billing/cancel/", MyBillingCancelView.as_view(), name="my-billing-cancel"),
+    path("me/transactions/", MyTransactionsView.as_view(), name="my-transactions"),
     # Webhook
     path("webhook/connect/", ConnectWebhookView.as_view(), name="webhook-connect"),
 ]

@@ -39,6 +39,7 @@ from .serializers import (
     OnboardSerializer,
     RefundSerializer,
     StudentBillingSerializer,
+    TransferSerializer,
 )
 
 log = logging.getLogger(__name__)
@@ -408,6 +409,184 @@ class RefundBillingView(APIView):
         return Response({"detail": "Estorno solicitado ao Asaas."})
 
 
+# ---------------------------------------------------------------------------
+# Painel financeiro do personal (subconta Asaas)
+# ---------------------------------------------------------------------------
+def _require_ready_subaccount(user: User) -> ConnectedAccount:
+    """Garante que o personal tem subconta pronta antes de operações financeiras."""
+    ca: ConnectedAccount | None = getattr(user, "connected_account", None)
+    if ca is None:
+        raise PermissionDenied(
+            "Cadastre sua conta de recebimento Asaas antes de acessar finanças."
+        )
+    if not ca.api_key_encrypted:
+        raise PermissionDenied(
+            "Subconta sem API key salva — recadastre a conta de recebimento."
+        )
+    return ca
+
+
+def _guess_pix_key_type(key: str) -> str:
+    """Detecção heurística — usuário pode sobrescrever no body."""
+    digits = "".join(c for c in key if c.isdigit())
+    if "@" in key:
+        return "EMAIL"
+    if len(digits) == 11 and key.startswith("+"):
+        return "PHONE"
+    if len(digits) == 11:
+        return "CPF"
+    if len(digits) == 14:
+        return "CNPJ"
+    return "EVP"  # chave aleatória (UUID)
+
+
+class FinanceBalanceView(APIView):
+    """GET /api/payments/me/finance/balance/ — saldo da subconta no Asaas."""
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def get(self, request):
+        ca = _require_ready_subaccount(request.user)
+        asaas_gateway.ensure_enabled()
+        try:
+            data = asaas_gateway.get_balance(api_key=ca.api_key_encrypted)
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        # API devolve {"balance": <float>}; normaliza pra centavos pra evitar float drift.
+        balance_reais = float(data.get("balance") or 0)
+        return Response({
+            "balance_cents": int(round(balance_reais * 100)),
+            "balance_reais": balance_reais,
+        })
+
+
+class FinanceTransactionsView(APIView):
+    """
+    GET /api/payments/me/finance/transactions/?status=RECEIVED&limit=50
+
+    Lista de cobranças do split (com a fee da FichaGym deduzida). Default
+    traz RECEIVED + CONFIRMED + RECEIVED_IN_CASH.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def get(self, request):
+        ca = _require_ready_subaccount(request.user)
+        asaas_gateway.ensure_enabled()
+        try:
+            limit = max(1, min(100, int(request.query_params.get("limit", 50))))
+            offset = max(0, int(request.query_params.get("offset", 0)))
+        except ValueError:
+            limit, offset = 50, 0
+        status_in_param = request.query_params.get("status")
+        if status_in_param:
+            status_in = [s.strip().upper() for s in status_in_param.split(",") if s.strip()]
+        else:
+            status_in = ["RECEIVED", "CONFIRMED", "RECEIVED_IN_CASH"]
+        try:
+            data = asaas_gateway.list_payments(
+                status_in=status_in,
+                limit=limit,
+                offset=offset,
+                api_key=ca.api_key_encrypted,
+            )
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        items = []
+        for p in data.get("data") or []:
+            items.append({
+                "id": p.get("id"),
+                "value_cents": int(round(float(p.get("value") or 0) * 100)),
+                "net_value_cents": int(round(float(p.get("netValue") or 0) * 100)),
+                "status": p.get("status"),
+                "billing_type": p.get("billingType"),
+                "due_date": p.get("dueDate"),
+                "payment_date": p.get("paymentDate") or p.get("confirmedDate"),
+                "customer": p.get("customer"),
+                "description": p.get("description"),
+                "external_reference": p.get("externalReference"),
+            })
+        return Response({
+            "items": items,
+            "total": data.get("totalCount"),
+            "has_more": data.get("hasMore"),
+        })
+
+
+class FinanceTransferView(APIView):
+    """
+    POST /api/payments/me/finance/transfer/
+
+    Body: {value_cents, pix_key, pix_key_type?, description?}
+
+    Solicita um saque via Pix da subconta pra a chave Pix do recebedor.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def post(self, request):
+        ca = _require_ready_subaccount(request.user)
+        asaas_gateway.ensure_enabled()
+        body = TransferSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        data = body.validated_data
+        value_reais = round(data["value_cents"] / 100.0, 2)
+        pix_key = data["pix_key"].strip()
+        pix_key_type = (data.get("pix_key_type") or "").strip() or _guess_pix_key_type(pix_key)
+        try:
+            resp = asaas_gateway.create_transfer(
+                value_reais=value_reais,
+                pix_address_key=pix_key,
+                pix_address_key_type=pix_key_type,
+                description=data.get("description") or None,
+                api_key=ca.api_key_encrypted,
+            )
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        return Response({
+            "id": resp.get("id"),
+            "status": resp.get("status"),
+            "value_cents": int(round(float(resp.get("value") or 0) * 100)),
+            "net_value_cents": int(round(float(resp.get("netValue") or 0) * 100)),
+            "scheduled_date": resp.get("scheduledDate"),
+            "type": resp.get("type"),
+        }, status=status.HTTP_201_CREATED)
+
+
+class FinanceTransferListView(APIView):
+    """GET /api/payments/me/finance/transfers/ — histórico de saques."""
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def get(self, request):
+        ca = _require_ready_subaccount(request.user)
+        asaas_gateway.ensure_enabled()
+        try:
+            data = asaas_gateway.list_transfers(api_key=ca.api_key_encrypted)
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        items = []
+        for t in data.get("data") or []:
+            items.append({
+                "id": t.get("id"),
+                "value_cents": int(round(float(t.get("value") or 0) * 100)),
+                "net_value_cents": int(round(float(t.get("netValue") or 0) * 100)),
+                "status": t.get("status"),
+                "type": t.get("type"),
+                "scheduled_date": t.get("scheduledDate"),
+                "effective_date": t.get("effectiveDate"),
+                "transfer_fee_cents": int(round(float(t.get("transferFee") or 0) * 100)),
+            })
+        return Response({
+            "items": items,
+            "total": data.get("totalCount"),
+            "has_more": data.get("hasMore"),
+        })
+
+
+# ---------------------------------------------------------------------------
+# Visão do aluno
+# ---------------------------------------------------------------------------
 class MyBillingView(APIView):
     """
     GET /api/payments/me/billing/ — o aluno vê quanto/como paga.
@@ -424,7 +603,80 @@ class MyBillingView(APIView):
             return Response({"exists": False})
         payload = StudentBillingSerializer(sb).data
         payload["exists"] = True
+        # Inclui o nome do trainer pra o aluno saber pra quem paga.
+        payload["trainer_display_name"] = (
+            sb.trainer.display_name or sb.trainer.username
+        )
         return Response(payload)
+
+
+class MyBillingCancelView(APIView):
+    """
+    POST /api/payments/me/billing/cancel/ — aluno cancela a própria assinatura.
+
+    Cancela a subscription no Asaas (próximas cobranças param de ser geradas).
+    O personal pode recriar depois se for o caso.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def post(self, request):
+        sb = StudentBilling.objects.filter(student=request.user).first()
+        if not sb or not sb.asaas_subscription_id:
+            return Response(
+                {"detail": "Você não tem assinatura ativa pra cancelar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        asaas_gateway.ensure_enabled()
+        try:
+            asaas_gateway.cancel_subscription(sb.asaas_subscription_id)
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        sb.status = StudentBilling.Status.CANCELED
+        sb.save(update_fields=["status", "updated_at"])
+        return Response({"detail": "Assinatura cancelada."})
+
+
+class MyTransactionsView(APIView):
+    """
+    GET /api/payments/me/transactions/
+
+    Histórico de pagamentos do aluno (todas as cobranças, pagas ou não).
+    Consulta direto a master Asaas filtrando por customer.
+    """
+
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get(self, request):
+        sb = StudentBilling.objects.filter(student=request.user).first()
+        if not sb or not sb.asaas_customer_id:
+            return Response({"items": [], "total": 0, "has_more": False})
+        asaas_gateway.ensure_enabled()
+        try:
+            data = asaas_gateway.request(
+                "GET",
+                "/payments",
+                params={"customer": sb.asaas_customer_id, "limit": 50},
+            )
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        items = []
+        for p in data.get("data") or []:
+            items.append({
+                "id": p.get("id"),
+                "value_cents": int(round(float(p.get("value") or 0) * 100)),
+                "status": p.get("status"),
+                "billing_type": p.get("billingType"),
+                "due_date": p.get("dueDate"),
+                "payment_date": p.get("paymentDate") or p.get("confirmedDate"),
+                "invoice_url": p.get("invoiceUrl"),
+                "description": p.get("description"),
+            })
+        return Response({
+            "items": items,
+            "total": data.get("totalCount"),
+            "has_more": data.get("hasMore"),
+        })
 
 
 # ---------------------------------------------------------------------------
