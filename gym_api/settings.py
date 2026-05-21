@@ -5,6 +5,7 @@ Lê configuração de variáveis de ambiente via django-environ.
 Em dev: docker-compose injeta o .env. Em prod: VPS injeta as vars.
 """
 
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -167,10 +168,15 @@ CORS_ALLOWED_ORIGINS = env.list("DJANGO_CORS_ALLOWED_ORIGINS", default=[])
 # Modo scaffold: enquanto ASAAS_API_KEY estiver vazia, o app sobe normal e
 # o fluxo GRÁTIS funciona 100%; só os endpoints que falam com o Asaas
 # respondem 503 com mensagem clara. Pluga as chaves de sandbox e reinicia.
-ASAAS_API_KEY = env("ASAAS_API_KEY", default="")
+#
+# NOTA: usamos `os.environ.get` direto (não `env()`) porque a chave do Asaas
+# começa com `$` (ex.: `$aact_...`) e o django-environ chama
+# `os.path.expandvars` que tentaria interpretar isso como variável shell e
+# devolveria vazio. `os.environ.get` entrega o valor literal.
+ASAAS_API_KEY = os.environ.get("ASAAS_API_KEY", "")
 ASAAS_API_BASE = env("ASAAS_API_BASE", default="https://sandbox.asaas.com/api/v3")
 # Shared secret enviado pelo Asaas no header `asaas-access-token`.
-ASAAS_WEBHOOK_TOKEN = env("ASAAS_WEBHOOK_TOKEN", default="")
+ASAAS_WEBHOOK_TOKEN = os.environ.get("ASAAS_WEBHOOK_TOKEN", "")
 # Valor (em centavos) por plano da assinatura do personal. Definido no servidor
 # pra ninguém forjar o preço pelo front.
 ASAAS_PRICES = {
