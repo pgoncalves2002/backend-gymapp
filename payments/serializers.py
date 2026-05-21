@@ -98,6 +98,22 @@ class RefundSerializer(serializers.Serializer):
     value_cents = serializers.IntegerField(min_value=0, required=False)
 
 
+class OneOffChargeSerializer(serializers.Serializer):
+    """
+    POST /api/payments/students/{id}/charges/
+
+    Cobrança avulsa extra — coexiste com a mensalidade recorrente.
+    Não é persistida localmente; vive só no Asaas. Identificada por
+    `externalReference="extra_<student_id>_<epoch>"` pra ser filtrada
+    no GET sem misturar com payments da subscription.
+    """
+
+    value_cents = serializers.IntegerField(min_value=100)
+    description = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    due_in_days = serializers.IntegerField(min_value=0, max_value=60, required=False)
+    cpf_cnpj = serializers.CharField(max_length=20, required=False, allow_blank=True)
+
+
 class TransferSerializer(serializers.Serializer):
     """
     POST /api/payments/me/finance/transfer/

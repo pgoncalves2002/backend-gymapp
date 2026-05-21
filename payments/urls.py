@@ -14,7 +14,9 @@ from .views import (
     MyTransactionsView,
     OnboardConnectView,
     RefundBillingView,
+    RefundChargeView,
     StudentBillingView,
+    StudentChargesView,
     SyncStudentBillingView,
 )
 
@@ -39,6 +41,17 @@ urlpatterns = [
         "students/<int:student_id>/billing/refund/",
         RefundBillingView.as_view(),
         name="student-billing-refund",
+    ),
+    # Cobranças avulsas extras (coexistem com a mensalidade recorrente)
+    path(
+        "students/<int:student_id>/charges/",
+        StudentChargesView.as_view(),
+        name="student-charges",
+    ),
+    path(
+        "students/<int:student_id>/charges/<str:charge_id>/refund/",
+        RefundChargeView.as_view(),
+        name="student-charge-refund",
     ),
     # Painel financeiro do personal
     path("me/finance/balance/", FinanceBalanceView.as_view(), name="finance-balance"),

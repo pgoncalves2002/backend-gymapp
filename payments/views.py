@@ -37,6 +37,7 @@ from .serializers import (
     ConnectedAccountStatusSerializer,
     CreateStudentBillingSerializer,
     OnboardSerializer,
+    OneOffChargeSerializer,
     RefundSerializer,
     StudentBillingSerializer,
     TransferSerializer,
@@ -270,6 +271,20 @@ class StudentBillingView(APIView):
             )
             sb.asaas_customer_id = customer["id"]
 
+        # Se já existe subscription do aluno (mesmo cancelada/estornada),
+        # cancela no Asaas pra não ficar com duas ativas no provedor. O Asaas
+        # devolve erro se já estiver cancelada — ignoramos.
+        if sb.asaas_subscription_id:
+            try:
+                asaas_gateway.cancel_subscription(sb.asaas_subscription_id)
+            except asaas_gateway.AsaasError as exc:
+                log.info(
+                    "Cancelamento da subscription antiga %s ignorado: %s",
+                    sb.asaas_subscription_id,
+                    exc.detail,
+                )
+            sb.asaas_subscription_id = ""
+
         if data["mode"] == StudentBilling.Mode.RECURRING:
             sub = asaas_gateway.create_subscription(
                 customer_id=sb.asaas_customer_id,
@@ -287,6 +302,7 @@ class StudentBillingView(APIView):
 
             invoice_url = _first_invoice_url(sub) or ""
             sb.last_invoice_url = invoice_url
+            sb.asaas_payment_id = ""  # limpa ponteiro pra payment antigo
         else:
             payment = asaas_gateway.create_payment(
                 customer_id=sb.asaas_customer_id,
@@ -303,8 +319,9 @@ class StudentBillingView(APIView):
         sb.trainer = request.user
         sb.price_cents = data["price_cents"]
         sb.mode = data["mode"]
-        if sb.status == StudentBilling.Status.CANCELED:
-            sb.status = StudentBilling.Status.PENDING  # nova tentativa
+        # Cobrança nova reinicia o ciclo — qualquer estado anterior (canceled,
+        # refunded, past_due) vira pending até o aluno pagar.
+        sb.status = StudentBilling.Status.PENDING
         sb.save()
 
         payload = StudentBillingSerializer(sb).data
@@ -339,18 +356,31 @@ class SyncStudentBillingView(APIView):
             except asaas_gateway.AsaasError as exc:
                 return Response({"detail": str(exc.detail)}, status=exc.status_code)
             asaas_status = (asaas_sub.get("status") or "").upper()
-            if asaas_status == "ACTIVE":
-                sb.status = StudentBilling.Status.ACTIVE
-            elif asaas_status == "INACTIVE":
-                sb.status = StudentBilling.Status.CANCELED
-            for p in pays.get("data") or []:
-                ps = (p.get("status") or "").upper()
+            # Cobrança mais recente é a que dita o estado atual — uma sub
+            # ACTIVE com payment REFUNDED tem que aparecer como REFUNDED, não
+            # active, senão a UI continua mostrando "Pagar agora" pra uma
+            # invoiceUrl que o Asaas já apagou (404).
+            payments_list = pays.get("data") or []
+            latest = payments_list[0] if payments_list else None
+            new_status = sb.status
+            if latest:
+                ps = (latest.get("status") or "").upper()
                 if ps in {"CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"}:
-                    sb.status = StudentBilling.Status.ACTIVE
-                    sb.asaas_payment_id = p.get("id") or sb.asaas_payment_id
-                    break
-                if ps == "OVERDUE":
-                    sb.status = StudentBilling.Status.PAST_DUE
+                    new_status = StudentBilling.Status.ACTIVE
+                elif ps == "OVERDUE":
+                    new_status = StudentBilling.Status.PAST_DUE
+                elif ps == "REFUNDED":
+                    new_status = StudentBilling.Status.REFUNDED
+                elif ps == "PENDING":
+                    new_status = StudentBilling.Status.PENDING
+                sb.asaas_payment_id = latest.get("id") or sb.asaas_payment_id
+                # Atualiza invoiceUrl pra apontar pra fatura mais recente
+                # (cobranças estornadas perdem a URL no Asaas).
+                if latest.get("invoiceUrl"):
+                    sb.last_invoice_url = latest["invoiceUrl"]
+            if asaas_status == "INACTIVE":
+                new_status = StudentBilling.Status.CANCELED
+            sb.status = new_status
             next_due = _parse_iso(asaas_sub.get("nextDueDate"))
             if next_due:
                 sb.current_period_end = next_due
@@ -369,6 +399,154 @@ class SyncStudentBillingView(APIView):
 
         sb.save()
         return Response(StudentBillingSerializer(sb).data)
+
+
+class StudentChargesView(APIView):
+    """
+    /api/payments/students/{student_id}/charges/
+
+    POST: cria UMA cobrança avulsa extra (não substitui a mensalidade
+          recorrente). Boa pra matrícula, aula extra, multa etc.
+    GET:  lista as cobranças avulsas já geradas (filtra pela
+          externalReference `extra_<student_id>_*`).
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def _student(self, request, student_id: int) -> User:
+        return get_object_or_404(
+            User, pk=student_id, role=User.Role.STUDENT, created_by=request.user
+        )
+
+    def _ensure_customer(self, student: User, trainer: User, cpf_cnpj: str | None) -> str:
+        """Reutiliza customer do StudentBilling se existe; senão cria um novo."""
+        sb = StudentBilling.objects.filter(student=student).first()
+        if sb and sb.asaas_customer_id:
+            return sb.asaas_customer_id
+        customer = asaas_gateway.create_customer(
+            name=student.display_name or student.username,
+            email=student.email or None,
+            cpf_cnpj=cpf_cnpj,
+            mobile_phone=student.phone or None,
+            external_reference=f"student_{student.id}",
+        )
+        # Persiste o customer_id pra o próximo POST reaproveitar. Se ainda
+        # não tem StudentBilling, criamos um stub PENDING (sem mensalidade
+        # recorrente) só pra guardar o customer_id — mas isso atrapalha o
+        # gate da mensalidade recorrente. Melhor: NÃO criar stub aqui, só
+        # devolver o customer_id. O personal pode criar a mensalidade depois.
+        if sb:
+            sb.asaas_customer_id = customer["id"]
+            sb.save(update_fields=["asaas_customer_id", "updated_at"])
+        return customer["id"]
+
+    def post(self, request, student_id: int):
+        student = self._student(request, student_id)
+        body = OneOffChargeSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        data = body.validated_data
+
+        if not student.uses_internal_payment:
+            raise ValidationError(
+                {"student": "Habilite 'Pagamento interno' no aluno antes de cobrar."}
+            )
+        trainer_ca = _ensure_can_receive(request.user)
+        asaas_gateway.ensure_enabled()
+
+        cpf_cnpj = (data.get("cpf_cnpj") or "").strip() or None
+        customer_id = self._ensure_customer(student, request.user, cpf_cnpj)
+        value_reais = round(data["value_cents"] / 100.0, 2)
+        description = (
+            data.get("description")
+            or f"Cobrança avulsa — {request.user.display_name or request.user.username}"
+        )
+        due_in = data.get("due_in_days") or 3
+        # epoch curto pra distinguir cobranças avulsas múltiplas pro mesmo aluno
+        import time
+        ext_ref = f"extra_{student.id}_{int(time.time())}"
+
+        payment = asaas_gateway.create_payment(
+            customer_id=customer_id,
+            value_reais=value_reais,
+            due_date=_next_due_iso(due_in),
+            billing_type="UNDEFINED",
+            description=description,
+            external_reference=ext_ref,
+            split=_split_for(trainer_ca),
+        )
+        return Response(
+            {
+                "id": payment.get("id"),
+                "url": payment.get("invoiceUrl"),
+                "value_cents": int(round(float(payment.get("value") or 0) * 100)),
+                "status": payment.get("status"),
+                "billing_type": payment.get("billingType"),
+                "due_date": payment.get("dueDate"),
+                "description": payment.get("description"),
+                "external_reference": payment.get("externalReference"),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    def get(self, request, student_id: int):
+        student = self._student(request, student_id)
+        sb = StudentBilling.objects.filter(student=student).first()
+        if not sb or not sb.asaas_customer_id:
+            return Response({"items": []})
+        asaas_gateway.ensure_enabled()
+        try:
+            data = asaas_gateway.request(
+                "GET",
+                "/payments",
+                params={"customer": sb.asaas_customer_id, "limit": 100},
+            )
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        items = []
+        prefix = f"extra_{student.id}_"
+        for p in data.get("data") or []:
+            ext = (p.get("externalReference") or "")
+            if not ext.startswith(prefix):
+                continue
+            items.append({
+                "id": p.get("id"),
+                "value_cents": int(round(float(p.get("value") or 0) * 100)),
+                "status": p.get("status"),
+                "billing_type": p.get("billingType"),
+                "due_date": p.get("dueDate"),
+                "payment_date": p.get("paymentDate") or p.get("confirmedDate"),
+                "invoice_url": p.get("invoiceUrl"),
+                "description": p.get("description"),
+                "external_reference": ext,
+            })
+        return Response({"items": items})
+
+
+class RefundChargeView(APIView):
+    """
+    POST /api/payments/students/{student_id}/charges/{charge_id}/refund/
+
+    Estorno de uma cobrança avulsa específica. Total se sem body; parcial
+    se passar `value_cents`.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def post(self, request, student_id: int, charge_id: str):
+        # Só permite estornar se o aluno foi criado pelo trainer logado.
+        get_object_or_404(
+            User, pk=student_id, role=User.Role.STUDENT, created_by=request.user
+        )
+        body = RefundSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        value_cents = body.validated_data.get("value_cents")
+        value_reais = round(value_cents / 100.0, 2) if value_cents else None
+        asaas_gateway.ensure_enabled()
+        try:
+            asaas_gateway.refund_payment(charge_id, value_reais=value_reais)
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+        return Response({"detail": "Estorno solicitado ao Asaas."})
 
 
 class RefundBillingView(APIView):
