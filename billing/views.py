@@ -216,6 +216,60 @@ class SubscriptionDetailView(APIView):
         return Response(payload)
 
 
+class SyncSubscriptionView(APIView):
+    """
+    POST /api/billing/sync/
+
+    Força um GET na subscription/payments do Asaas e atualiza o status local.
+    Útil em dev (sem túnel de webhook) e como fallback se um webhook se
+    perder. Idempotente.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def post(self, request):
+        sub = Subscription.objects.filter(user=request.user).first()
+        if not sub or not sub.asaas_subscription_id:
+            return Response(
+                {"detail": "Sem assinatura pra sincronizar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        asaas_gateway.ensure_enabled()
+        try:
+            asaas_sub = asaas_gateway.get_subscription(sub.asaas_subscription_id)
+            payments = asaas_gateway.request(
+                "GET", f"/subscriptions/{sub.asaas_subscription_id}/payments"
+            )
+        except asaas_gateway.AsaasError as exc:
+            return Response({"detail": str(exc.detail)}, status=exc.status_code)
+
+        # Mapeia o status da subscription.
+        new_status = sub.status
+        asaas_status = (asaas_sub.get("status") or "").upper()
+        if asaas_status == "ACTIVE":
+            new_status = Subscription.Status.ACTIVE
+        elif asaas_status == "EXPIRED":
+            new_status = Subscription.Status.PAST_DUE
+        elif asaas_status == "INACTIVE":
+            new_status = Subscription.Status.CANCELED
+
+        # Se alguma fatura está paga, força active.
+        for p in payments.get("data") or []:
+            ps = (p.get("status") or "").upper()
+            if ps in {"CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"}:
+                new_status = Subscription.Status.ACTIVE
+                break
+            if ps == "OVERDUE":
+                new_status = Subscription.Status.PAST_DUE
+
+        sub.status = new_status
+        next_due = _parse_iso_date(asaas_sub.get("nextDueDate"))
+        if next_due:
+            sub.current_period_end = next_due
+        sub.save()
+        return Response(SubscriptionSerializer(sub).data)
+
+
 class CancelSubscriptionView(APIView):
     """
     POST /api/billing/cancel/  — cancela a Subscription do Asaas.

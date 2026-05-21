@@ -9,6 +9,7 @@ from .views import (
     OnboardConnectView,
     RefundBillingView,
     StudentBillingView,
+    SyncStudentBillingView,
 )
 
 app_name = "payments"
@@ -22,6 +23,11 @@ urlpatterns = [
         "students/<int:student_id>/billing/",
         StudentBillingView.as_view(),
         name="student-billing",
+    ),
+    path(
+        "students/<int:student_id>/billing/sync/",
+        SyncStudentBillingView.as_view(),
+        name="student-billing-sync",
     ),
     path(
         "students/<int:student_id>/billing/refund/",

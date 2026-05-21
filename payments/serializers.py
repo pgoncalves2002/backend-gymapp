@@ -30,6 +30,8 @@ class OnboardSerializer(serializers.Serializer):
     cpf_cnpj = serializers.CharField(max_length=20)
     birth_date = serializers.DateField(required=False)
     company_type = serializers.CharField(required=False, allow_blank=True)
+    # Renda anual (CPF) ou faturamento anual (CNPJ), em reais. Asaas exige.
+    income_value = serializers.FloatField(min_value=0)
     # Endereço — mínimo pedido pela API do Asaas (postalCode + address).
     postal_code = serializers.CharField(max_length=10)
     address = serializers.CharField(max_length=255)

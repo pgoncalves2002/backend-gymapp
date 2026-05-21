@@ -49,6 +49,7 @@ class OnboardConnectTests(TestCase):
             self.url,
             {
                 "cpf_cnpj": "12345678900",
+                "income_value": 3000.0,
                 "postal_code": "01001000",
                 "address": "Praça da Sé",
                 "address_number": "100",
@@ -65,6 +66,7 @@ class OnboardConnectTests(TestCase):
             self.url,
             {
                 "cpf_cnpj": "12345678900",
+                "income_value": 3000.0,
                 "postal_code": "01001000",
                 "address": "Praça da Sé",
                 "address_number": "100",
@@ -89,6 +91,7 @@ class OnboardConnectTests(TestCase):
                 self.url,
                 {
                     "cpf_cnpj": "12345678900",
+                    "income_value": 3000.0,
                     "postal_code": "01001000",
                     "address": "Praça da Sé",
                     "address_number": "100",

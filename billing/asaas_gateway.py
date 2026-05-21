@@ -266,6 +266,7 @@ def create_subaccount(
     address: dict[str, Any] | None = None,
     company_type: str | None = None,
     birth_date: str | None = None,
+    income_value: float | None = None,
     incoming_transfer_pix_key: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -275,7 +276,8 @@ def create_subaccount(
     `apiKey` (usada se o personal for operar em White Label). Sandbox: máx
     **20 subcontas/dia**.
 
-    Mínimos pedidos pela doc: name, email, cpfCnpj, mobilePhone, address.
+    Mínimos pedidos pela doc: name, email, cpfCnpj, mobilePhone, address,
+    incomeValue (renda anual estimada pra CPF / faturamento anual pra CNPJ).
     """
     payload: dict[str, Any] = {
         "name": name,
@@ -288,6 +290,8 @@ def create_subaccount(
         payload["birthDate"] = birth_date
     if company_type:
         payload["companyType"] = company_type
+    if income_value is not None:
+        payload["incomeValue"] = income_value
     if address:
         payload.update(address)
     if incoming_transfer_pix_key:

@@ -21,13 +21,49 @@ class UserAdmin(BaseUserAdmin):
     """
 
     fieldsets = BaseUserAdmin.fieldsets + (
-        ("Perfil", {"fields": ("role", "display_name", "birth_date", "created_by")}),
+        (
+            "Perfil",
+            {
+                "fields": (
+                    "role",
+                    "display_name",
+                    "phone",
+                    "birth_date",
+                    "created_by",
+                ),
+            },
+        ),
+        (
+            "Cobrança",
+            {
+                "fields": ("is_billing_exempt", "uses_internal_payment"),
+                "description": (
+                    "<b>is_billing_exempt</b>: personal isento da assinatura "
+                    "do app (cortesia/grandfather).<br>"
+                    "<b>uses_internal_payment</b>: habilita o personal a "
+                    "cobrar os alunos pelo app (split via Asaas)."
+                ),
+            },
+        ),
     )
     add_fieldsets = BaseUserAdmin.add_fieldsets + (
-        ("Perfil", {"fields": ("role", "display_name")}),
+        ("Perfil", {"fields": ("role", "display_name", "phone")}),
     )
-    list_display = ("username", "display_name", "email", "role", "created_by", "is_active")
-    list_filter = BaseUserAdmin.list_filter + ("role",)
+    list_display = (
+        "username",
+        "display_name",
+        "email",
+        "role",
+        "uses_internal_payment",
+        "is_billing_exempt",
+        "created_by",
+        "is_active",
+    )
+    list_filter = BaseUserAdmin.list_filter + (
+        "role",
+        "uses_internal_payment",
+        "is_billing_exempt",
+    )
     search_fields = ("username", "display_name", "email")
 
     # MARK: - Visibilidade
@@ -72,7 +108,11 @@ class UserAdmin(BaseUserAdmin):
     def get_readonly_fields(self, request, obj=None):
         ro = list(super().get_readonly_fields(request, obj))
         if not request.user.has_full_access:
-            # Trainer não decide papel/staff/superuser/created_by/groups
-            ro += ["is_staff", "is_superuser", "role", "created_by",
-                   "user_permissions", "groups"]
+            # Trainer não decide papel/staff/superuser/created_by/groups nem
+            # mexe nas flags de cobrança (admin libera).
+            ro += [
+                "is_staff", "is_superuser", "role", "created_by",
+                "user_permissions", "groups",
+                "is_billing_exempt", "uses_internal_payment",
+            ]
         return ro

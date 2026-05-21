@@ -152,6 +152,7 @@ class OnboardConnectView(APIView):
             birth_date=(
                 data["birth_date"].isoformat() if data.get("birth_date") else None
             ),
+            income_value=data["income_value"],
             incoming_transfer_pix_key=data.get("pix_key") or None,
         )
 
@@ -308,6 +309,65 @@ class StudentBillingView(APIView):
         payload = StudentBillingSerializer(sb).data
         payload["url"] = sb.last_invoice_url
         return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class SyncStudentBillingView(APIView):
+    """
+    POST /api/payments/students/{student_id}/billing/sync/
+
+    Força um GET na subscription/payments do Asaas e atualiza o status local.
+    Útil em dev (sem túnel de webhook) e como fallback se um webhook se
+    perder. Idempotente.
+    """
+
+    permission_classes = (permissions.IsAuthenticated, IsTrainer)
+
+    def post(self, request, student_id: int):
+        student = get_object_or_404(
+            User, pk=student_id, role=User.Role.STUDENT, created_by=request.user
+        )
+        sb = get_object_or_404(StudentBilling, student=student)
+        asaas_gateway.ensure_enabled()
+
+        if sb.asaas_subscription_id:
+            try:
+                asaas_sub = asaas_gateway.get_subscription(sb.asaas_subscription_id)
+                pays = asaas_gateway.request(
+                    "GET", f"/subscriptions/{sb.asaas_subscription_id}/payments"
+                )
+            except asaas_gateway.AsaasError as exc:
+                return Response({"detail": str(exc.detail)}, status=exc.status_code)
+            asaas_status = (asaas_sub.get("status") or "").upper()
+            if asaas_status == "ACTIVE":
+                sb.status = StudentBilling.Status.ACTIVE
+            elif asaas_status == "INACTIVE":
+                sb.status = StudentBilling.Status.CANCELED
+            for p in pays.get("data") or []:
+                ps = (p.get("status") or "").upper()
+                if ps in {"CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"}:
+                    sb.status = StudentBilling.Status.ACTIVE
+                    sb.asaas_payment_id = p.get("id") or sb.asaas_payment_id
+                    break
+                if ps == "OVERDUE":
+                    sb.status = StudentBilling.Status.PAST_DUE
+            next_due = _parse_iso(asaas_sub.get("nextDueDate"))
+            if next_due:
+                sb.current_period_end = next_due
+        elif sb.asaas_payment_id:
+            try:
+                p = asaas_gateway.request("GET", f"/payments/{sb.asaas_payment_id}")
+            except asaas_gateway.AsaasError as exc:
+                return Response({"detail": str(exc.detail)}, status=exc.status_code)
+            ps = (p.get("status") or "").upper()
+            if ps in {"CONFIRMED", "RECEIVED", "RECEIVED_IN_CASH"}:
+                sb.status = StudentBilling.Status.ACTIVE
+            elif ps == "OVERDUE":
+                sb.status = StudentBilling.Status.PAST_DUE
+            elif ps == "REFUNDED":
+                sb.status = StudentBilling.Status.REFUNDED
+
+        sb.save()
+        return Response(StudentBillingSerializer(sb).data)
 
 
 class RefundBillingView(APIView):
