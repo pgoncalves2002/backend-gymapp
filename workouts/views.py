@@ -198,11 +198,14 @@ class WorkoutViewSet(viewsets.ModelViewSet):
         if user.is_trainer:
             qs = qs.filter(trainer=user)
         else:
+            # Validade do ACESSO do aluno: se já passou, lista vazia.
+            if not user.is_within_validity:
+                return Workout.objects.none()
             # Aluno NUNCA vê fichas arquivadas (em nenhuma ação — list,
             # retrieve, etc.). Pra ele, a ficha arquivada simplesmente
             # não existe.
-            # Idem janela de validade: ficha fora da janela = inexistente
-            # pro aluno (mesma regra do /api/sync/).
+            # Idem janela de validade da FICHA: ficha fora da janela =
+            # inexistente pro aluno (mesma regra do /api/sync/).
             from django.db.models import Q
             from datetime import date
             today = date.today()
